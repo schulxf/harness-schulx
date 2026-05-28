@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.0
+
+- Documented the official v0.3 Harness operating model.
+- Added local dashboard, task queue and supervisor concepts.
+- Added resume/checkpoint guidance for long-running work.
+- Added GitHub Issues/PR helper model.
+- Added budgets and profiles: `fast`, `standard`, `deep`.
+- Added artifact viewer and artifact index guidance.
+- Added explicit failure policy.
+- Added project memory model.
+- Added plugin registry model.
+- Added security scanner expectations.
+- Expanded Telegram from monitoring bridge to remote-control surface.
+
 ## 0.2.0
 
 - Added Telegram notifications, inbox, mirror, Codex gateway and bridge modes.

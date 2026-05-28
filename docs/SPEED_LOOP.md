@@ -9,6 +9,9 @@ Harness Schulx reduces wall-clock time without removing evidence.
 3. Keep P0/P1 fixes inside the same task.
 4. Ask Greptile to start from the changed surface.
 5. Cache context preflight results when nothing changed.
+6. Resume from checkpoints instead of reconstructing state from chat.
+7. Use `fast`, `standard` and `deep` profiles so small tasks do not pay the
+   cost of large tasks.
 
 ## Sensor Tiers
 
@@ -92,3 +95,28 @@ final pass
 ```
 
 This keeps the loop fast and avoids turning one task into a new planning cycle.
+
+## v0.3 Fast Path
+
+Recommended fast path for a small issue:
+
+```text
+queue ready
+standard or fast profile
+contract
+start through supervisor
+checkpoint after first useful diff
+quick sensors
+parallel evaluator/reviewer handoffs
+full sensors
+report
+```
+
+If the task is interrupted, resume from the latest checkpoint and run the
+smallest useful sensor tier before continuing.
+
+## Budgets
+
+Budgets keep speed honest. A budget warning should trigger a checkpoint and a
+short decision: continue, narrow scope, or mark `needs_work`. Do not convert
+budget exhaustion into a silent pass.

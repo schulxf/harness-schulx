@@ -1,7 +1,8 @@
 # Telegram Guide
 
 Harness Schulx can use Telegram for notifications, inbox messages, Codex
-mirroring and a Codex bridge.
+mirroring, queue control and a Codex bridge. In v0.3 Telegram is a
+remote-control surface for the local supervisor.
 
 ## Setup
 
@@ -117,6 +118,22 @@ turn is already running, unless parallel execution is intentional.
 /codex send this to Codex
 ```
 
+v0.3 installations may also expose:
+
+```text
+/queue
+/active
+/checkpoint
+/artifacts TASK-001
+/budget
+/pause
+/resume
+/block reason
+```
+
+Normal messages should be queued for the operator by default. Use `/codex`
+when the intent is to send an active command to Codex.
+
 ## Media
 
 Harness can download images, voice messages and audio files into:
@@ -141,3 +158,7 @@ Without `OPENAI_API_KEY`, media is still saved and referenced in the inbox.
 - Prefer `bridge` default queue mode during long autonomous work.
 - Use `/codex` only when intentional.
 - Use `--bypass` only in a trusted environment.
+- Treat Telegram as remote control: require explicit chat allowlists and avoid
+  exposing secrets, full logs or private artifacts.
+- Security scanner findings about Telegram permissions block in `deep` profile
+  unless explicitly accepted in the report.

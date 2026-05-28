@@ -20,6 +20,7 @@ if sys.version_info < (3, 10):
 import argparse
 import base64
 import hashlib
+import html
 import json
 import mimetypes
 import os
@@ -37,9 +38,93 @@ from pathlib import Path
 from typing import Any
 
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 HARNESS_DIR = ".harness"
 DEFAULT_PROTECTED_BRANCHES = ["main", "master", "production"]
+DEFAULT_OPERATION_PROFILES = {
+    "fast": {
+        "description": "Loop curto para feedback rapido.",
+        "sensor_tier": "quick",
+        "review": "parallel",
+        "max_fix_attempts": 1,
+        "time_budget_minutes": 30,
+    },
+    "balanced": {
+        "description": "Padrao para trabalho diario.",
+        "sensor_tier": "affected",
+        "review": "parallel",
+        "max_fix_attempts": 2,
+        "time_budget_minutes": 90,
+    },
+    "standard": {
+        "description": "Alias documentado para trabalho diario equilibrado.",
+        "sensor_tier": "full",
+        "review": "parallel",
+        "max_fix_attempts": 2,
+        "time_budget_minutes": 90,
+    },
+    "strict": {
+        "description": "Mais rigor para areas sensiveis.",
+        "sensor_tier": "full",
+        "review": "parallel",
+        "max_fix_attempts": 3,
+        "time_budget_minutes": 180,
+    },
+    "deep": {
+        "description": "Alias documentado para revisao profunda.",
+        "sensor_tier": "full",
+        "review": "parallel",
+        "max_fix_attempts": 3,
+        "time_budget_minutes": 180,
+    },
+    "release": {
+        "description": "Fechamento antes de publicar.",
+        "sensor_tier": "all",
+        "review": "parallel",
+        "max_fix_attempts": 3,
+        "time_budget_minutes": 240,
+    },
+}
+DEFAULT_FAILURE_POLICY = {
+    "max_fix_attempts": 3,
+    "auto_fix_brief": True,
+    "p0_blocks": True,
+    "p1_blocks": True,
+    "p2_blocks": False,
+}
+DEFAULT_GITHUB_CONFIG = {
+    "repo": "",
+    "remote": "origin",
+    "default_base": "main",
+}
+SECRET_PATTERNS = [
+    ("private_key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE" r" KEY-----")),
+    ("telegram_bot_token", re.compile(r"\b\d{8,}:[A-Za-z0-9_-]{30,}\b")),
+    ("openai_key", re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b")),
+    ("github_token", re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b")),
+    ("slack_token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{20,}\b")),
+    (
+        "secret_assignment",
+        re.compile(
+            r"\b(?:API_KEY|TOKEN|SECRET|PASSWORD|PRIVATE_KEY)\b\s*[:=]\s*['\"]?"
+            r"(?!<|example|changeme|your-|novo-token|telegram-bot-token|openai-api-key)"
+            r"[A-Za-z0-9_./:+-]{16,}",
+            re.IGNORECASE,
+        ),
+    ),
+]
+SECURITY_EXCLUDED_DIRS = {
+    ".git",
+    ".harness",
+    ".pytest_cache",
+    "__pycache__",
+    "node_modules",
+    ".venv",
+    "venv",
+    "env",
+    "dist",
+    "build",
+}
 CONTEXT_KINDS = [
     "context",
     "domain-context",
@@ -191,6 +276,46 @@ def review_policy(config: dict[str, Any]) -> dict[str, Any]:
     return policy
 
 
+def failure_policy(config: dict[str, Any]) -> dict[str, Any]:
+    policy = dict(DEFAULT_FAILURE_POLICY)
+    configured = config.get("failure_policy", {})
+    if isinstance(configured, dict):
+        policy.update(configured)
+    return policy
+
+
+def github_config(config: dict[str, Any]) -> dict[str, Any]:
+    configured = config.get("github", {})
+    return deep_merge(DEFAULT_GITHUB_CONFIG, configured if isinstance(configured, dict) else {})
+
+
+def operation_profiles(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    profiles = {name: dict(value) for name, value in DEFAULT_OPERATION_PROFILES.items()}
+    configured = config.get("operation_profiles", {})
+    if isinstance(configured, dict):
+        for name, value in configured.items():
+            if isinstance(value, dict):
+                base = dict(profiles.get(str(name), {}))
+                base.update(value)
+                profiles[str(name)] = base
+    return profiles
+
+
+def active_profile_name(config: dict[str, Any], requested: str | None = None) -> str:
+    profiles = operation_profiles(config)
+    name = requested or str(config.get("active_profile") or "balanced")
+    if name not in profiles:
+        raise SystemExit(f"Profile desconhecido: {name}. Use `profile list`.")
+    return name
+
+
+def active_profile(config: dict[str, Any], requested: str | None = None) -> dict[str, Any]:
+    name = active_profile_name(config, requested)
+    profile = dict(operation_profiles(config)[name])
+    profile["name"] = name
+    return profile
+
+
 def config_bool(value: Any, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
@@ -232,6 +357,47 @@ def tasks_index_path(root: Path) -> Path:
     return harness_root(root) / "tasks" / "index.json"
 
 
+def queue_path(root: Path) -> Path:
+    return harness_root(root) / "queue" / "index.json"
+
+
+def supervisor_state_path(root: Path) -> Path:
+    return harness_root(root) / "supervisor" / "state.json"
+
+
+def checkpoints_root(root: Path, task_id: str | None = None) -> Path:
+    base = harness_root(root) / "checkpoints"
+    return base / task_id if task_id else base
+
+
+def artifacts_root(root: Path) -> Path:
+    return harness_root(root) / "artifacts"
+
+
+def artifacts_index_path(root: Path) -> Path:
+    return artifacts_root(root) / "index.json"
+
+
+def dashboard_root(root: Path) -> Path:
+    return harness_root(root) / "dashboard"
+
+
+def memory_index_path(root: Path) -> Path:
+    return harness_root(root) / "memory" / "index.json"
+
+
+def plugin_registry_path(root: Path) -> Path:
+    return harness_root(root) / "plugins" / "registry.json"
+
+
+def security_root(root: Path) -> Path:
+    return harness_root(root) / "security"
+
+
+def github_root(root: Path) -> Path:
+    return harness_root(root) / "github"
+
+
 def load_tasks(root: Path) -> list[dict[str, Any]]:
     return read_json(tasks_index_path(root), [])
 
@@ -265,6 +431,78 @@ def next_task_id(root: Path) -> str:
         if match:
             numbers.append(int(match.group(1)))
     return f"TASK-{(max(numbers) + 1) if numbers else 1:03d}"
+
+
+def load_queue(root: Path) -> list[dict[str, Any]]:
+    return read_json(queue_path(root), [])
+
+
+def save_queue(root: Path, items: list[dict[str, Any]]) -> None:
+    write_json(queue_path(root), items)
+
+
+def queue_item_id(task_id: str) -> str:
+    return f"Q-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{task_id.lower()}"
+
+
+def queue_counts(root: Path) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in load_queue(root):
+        status = str(item.get("status") or "queued")
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
+def sorted_queue_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        items,
+        key=lambda item: (
+            int(item.get("priority") or 100),
+            str(item.get("created_at") or ""),
+            str(item.get("id") or ""),
+        ),
+    )
+
+
+def next_queued_item(root: Path) -> dict[str, Any] | None:
+    for item in sorted_queue_items(load_queue(root)):
+        if item.get("status") == "queued":
+            return item
+    return None
+
+
+def active_queue_item(root: Path) -> dict[str, Any] | None:
+    for item in sorted_queue_items(load_queue(root)):
+        if item.get("status") == "active":
+            return item
+    return None
+
+
+def update_queue_item(root: Path, item_id: str, **updates: Any) -> dict[str, Any]:
+    items = load_queue(root)
+    for item in items:
+        if item.get("id") == item_id:
+            item.update(updates)
+            item["updated_at"] = utc_now()
+            save_queue(root, items)
+            return item
+    raise SystemExit(f"Item de fila nao encontrado: {item_id}")
+
+
+def task_budget(task: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    requested = task.get("budget", {}).get("profile")
+    if requested and requested not in operation_profiles(config):
+        profile = {"name": requested}
+        if isinstance(config.get("profiles"), dict):
+            profile.update(config["profiles"].get(requested, {}))
+        if isinstance(config.get("budgets"), dict):
+            profile.update(config["budgets"].get(requested, {}))
+    else:
+        profile = active_profile(config, requested)
+    budget = dict(profile)
+    if isinstance(task.get("budget"), dict):
+        budget.update(task["budget"])
+    return budget
 
 
 def context_manifest_path(root: Path) -> Path:
@@ -334,6 +572,67 @@ def normalize_path_key(path: Path) -> str:
 
 def to_posix(path: str | Path) -> str:
     return str(path).replace("\\", "/") if path else ""
+
+
+def load_memory(root: Path) -> list[dict[str, Any]]:
+    return read_json(memory_index_path(root), [])
+
+
+def save_memory(root: Path, entries: list[dict[str, Any]]) -> None:
+    write_json(memory_index_path(root), entries)
+
+
+def render_memory_context(root: Path, task_id: str | None = None, limit: int = 8) -> str:
+    entries = load_memory(root)
+    relevant = []
+    for entry in reversed(entries):
+        if task_id and entry.get("task_id") not in {None, "", task_id}:
+            continue
+        relevant.append(entry)
+        if len(relevant) >= limit:
+            break
+    if not relevant:
+        return "- Nenhuma memoria registrada ainda."
+    lines = []
+    for entry in relevant:
+        tags = ", ".join(entry.get("tags") or [])
+        suffix = f" [{tags}]" if tags else ""
+        task_suffix = f" ({entry.get('task_id')})" if entry.get("task_id") else ""
+        lines.append(f"- {entry.get('text', '').strip()}{task_suffix}{suffix}")
+    return "\n".join(lines)
+
+
+def load_plugins(root: Path) -> list[dict[str, Any]]:
+    payload = read_json(plugin_registry_path(root), {"plugins": []})
+    if isinstance(payload, dict):
+        return payload.get("plugins", [])
+    if isinstance(payload, list):
+        return payload
+    return []
+
+
+def save_plugins(root: Path, plugins: list[dict[str, Any]]) -> None:
+    write_json(plugin_registry_path(root), {"plugins": plugins})
+
+
+def plugin_by_name(root: Path, name: str) -> dict[str, Any]:
+    for plugin in load_plugins(root):
+        if plugin.get("name") == name:
+            return plugin
+    raise SystemExit(f"Plugin nao encontrado: {name}")
+
+
+def load_artifacts(root: Path) -> list[dict[str, Any]]:
+    return read_json(artifacts_index_path(root), [])
+
+
+def save_artifacts(root: Path, artifacts: list[dict[str, Any]]) -> None:
+    write_json(artifacts_index_path(root), artifacts)
+
+
+def artifact_id(task_id: str, path: Path) -> str:
+    digest = hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:10]
+    return f"ART-{task_id}-{digest}"
 
 
 def normalize_context_requirement(root: Path, item: Any) -> dict[str, Any]:
@@ -987,6 +1286,92 @@ def latest_run_dir(root: Path, task_id: str) -> Path:
     return runs[-1]
 
 
+def latest_run_dir_or_none(root: Path, task_id: str) -> Path | None:
+    runs_root = harness_root(root) / "runs" / task_id
+    if not runs_root.exists():
+        return None
+    runs = sorted([path for path in runs_root.iterdir() if path.is_dir()])
+    return runs[-1] if runs else None
+
+
+def create_checkpoint(
+    root: Path,
+    task_id: str,
+    reason: str,
+    run_dir: Path | None = None,
+    extra: dict[str, Any] | None = None,
+) -> Path:
+    task = find_task(root, task_id)
+    run_dir = run_dir or latest_run_dir_or_none(root, task_id)
+    payload: dict[str, Any] = {
+        "task_id": task_id,
+        "title": task.get("title"),
+        "task_status": task.get("status"),
+        "reason": reason,
+        "created_at": utc_now(),
+        "run_dir": str(run_dir) if run_dir else None,
+        "contract_exists": contract_file_path(root, task_id).exists(),
+        "git_status": git_output(root, ["status", "--short"]) if is_git_repo(root) else "",
+        "queue": active_queue_item(root),
+        "budget": task.get("budget", {}),
+    }
+    if run_dir:
+        for name in ["sensors.json", "evaluation.json"]:
+            path = run_dir / name
+            if path.exists():
+                payload[name.removesuffix(".json")] = read_json(path, {})
+    if extra:
+        payload.update(extra)
+    root_dir = checkpoints_root(root, task_id)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    path = root_dir / f"checkpoint-{stamp}.json"
+    write_json(path, payload)
+    write_json(root_dir / "latest.json", payload)
+    return path
+
+
+def latest_checkpoint_path(root: Path, task_id: str) -> Path | None:
+    latest = checkpoints_root(root, task_id) / "latest.json"
+    if latest.exists():
+        return latest
+    paths = sorted(checkpoints_root(root, task_id).glob("checkpoint-*.json"))
+    return paths[-1] if paths else None
+
+
+def render_resume_brief(root: Path, task_id: str, checkpoint: dict[str, Any]) -> str:
+    task = find_task(root, task_id)
+    contract = read_json(contract_file_path(root, task_id), {}) if contract_file_path(root, task_id).exists() else {}
+    run_dir = checkpoint.get("run_dir") or "sem run ainda"
+    next_steps = []
+    status = task.get("status")
+    if not contract:
+        next_steps.append(f"1. Criar contrato: python {Path(__file__).resolve()} --repo {root} contract {task_id}")
+    elif status in {"contracted", "planned"}:
+        next_steps.append(f"1. Iniciar run: python {Path(__file__).resolve()} --repo {root} start {task_id}")
+    elif status in {"in_progress", "sensors_failed", "needs_work"}:
+        tier = fastest_available_sensor_tier(contract)
+        next_steps.append(f"1. Rodar sensores rapidos: python {Path(__file__).resolve()} --repo {root} sensors {task_id} --tier {tier} --reviewed")
+        next_steps.append(f"2. Gerar avaliacao/review: python {Path(__file__).resolve()} --repo {root} evaluate {task_id}")
+    elif status in {"sensors_passed"}:
+        next_steps.append(f"1. Registrar avaliacao ou gerar handoffs: python {Path(__file__).resolve()} --repo {root} evaluate {task_id}")
+    elif status in {"passed", "done"}:
+        next_steps.append(f"1. Gerar relatorio: python {Path(__file__).resolve()} --repo {root} report {task_id}")
+    else:
+        next_steps.append("1. Rodar `status` e decidir a proxima etapa.")
+    return (
+        f"# Resume brief - {task_id}\n\n"
+        f"Task: {task.get('title')}\n"
+        f"Status atual: {status}\n"
+        f"Checkpoint: {checkpoint.get('created_at')}\n"
+        f"Motivo: {checkpoint.get('reason')}\n"
+        f"Run: {run_dir}\n\n"
+        "## Proximo passo recomendado\n\n"
+        f"{chr(10).join(next_steps)}\n\n"
+        "## Status do Git no checkpoint\n\n"
+        f"```text\n{checkpoint.get('git_status') or 'sem status registrado'}\n```\n"
+    )
+
+
 def iter_run_dirs(root: Path, task_id: str | None = None) -> list[Path]:
     runs_root = harness_root(root) / "runs"
     if task_id:
@@ -1001,6 +1386,44 @@ def iter_run_dirs(root: Path, task_id: str | None = None) -> list[Path]:
     for task_runs_root in sorted([path for path in runs_root.iterdir() if path.is_dir()]):
         run_dirs.extend(sorted([path for path in task_runs_root.iterdir() if path.is_dir()]))
     return run_dirs
+
+
+def collect_run_artifacts(root: Path, task_id: str | None = None) -> list[dict[str, Any]]:
+    artifacts: list[dict[str, Any]] = []
+    interesting = {
+        "builder-brief.md",
+        "evaluator-brief.md",
+        "evaluator-agent-handoff.md",
+        "greptile-reviewer-agent-handoff.md",
+        "review-consolidation.md",
+        "parallel-dispatch.md",
+        "events.jsonl",
+        "evaluation.json",
+        "plain-summary.md",
+        "run.json",
+    }
+    for run_dir in iter_run_dirs(root, task_id):
+        task = run_dir.parent.name
+        for path in sorted(run_dir.iterdir()):
+            if not path.is_file():
+                continue
+            if path.name in interesting or path.name.startswith("sensors") or path.name.startswith("fix-brief"):
+                artifacts.append(
+                    {
+                        "id": artifact_id(task, path),
+                        "task_id": task,
+                        "run_id": run_dir.name,
+                        "path": to_posix(path.relative_to(root)),
+                        "kind": path.suffix.lstrip(".") or "file",
+                        "label": path.name,
+                        "size": path.stat().st_size,
+                        "created_at": datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+                        .replace(microsecond=0)
+                        .isoformat(),
+                    }
+                )
+    artifacts.extend(load_artifacts(root))
+    return artifacts
 
 
 def find_unevaluated_runs(root: Path, task_id: str | None = None) -> list[dict[str, Any]]:
@@ -1180,6 +1603,15 @@ def command_init(args: argparse.Namespace) -> None:
         "runs",
         "evaluations",
         "reports",
+        "queue",
+        "supervisor",
+        "checkpoints",
+        "artifacts",
+        "dashboard",
+        "memory",
+        "plugins",
+        "security",
+        "github",
         "telegram",
         "inbox/telegram/media",
     ]:
@@ -1195,6 +1627,12 @@ def command_init(args: argparse.Namespace) -> None:
         "required_context": [],
         "evaluation_policy": DEFAULT_EVALUATION_POLICY,
         "review_policy": DEFAULT_REVIEW_POLICY,
+        "failure_policy": DEFAULT_FAILURE_POLICY,
+        "operation_profiles": DEFAULT_OPERATION_PROFILES,
+        "active_profile": "balanced",
+        "profiles": {},
+        "budgets": {},
+        "github": DEFAULT_GITHUB_CONFIG,
         "telegram": DEFAULT_TELEGRAM_CONFIG,
         "protected_branches": DEFAULT_PROTECTED_BRANCHES,
         "sensor_execution_requires_review": True,
@@ -1213,6 +1651,18 @@ def command_init(args: argparse.Namespace) -> None:
 
     if not context_manifest_path(root).exists():
         write_json(context_manifest_path(root), [])
+
+    if not queue_path(root).exists():
+        write_json(queue_path(root), [])
+
+    if not memory_index_path(root).exists():
+        write_json(memory_index_path(root), [])
+
+    if not plugin_registry_path(root).exists():
+        save_plugins(root, [])
+
+    if not artifacts_index_path(root).exists():
+        write_json(artifacts_index_path(root), [])
 
     progress = hroot / "progress.md"
     if not progress.exists():
@@ -1526,6 +1976,12 @@ def telegram_status_summary(root: Path) -> str:
     branch = current_git_branch(root)
     if branch:
         lines.append(f"Branch atual: {branch}")
+    counts = queue_counts(root)
+    if counts:
+        lines.append(f"Fila: {counts}")
+    security = read_json(security_root(root) / "scan-latest.json", {})
+    if security:
+        lines.append(f"Security: {len(security.get('findings') or [])} finding(s)")
     lines.append("")
     lines.append(telegram_tasks_summary(root))
     return "\n".join(lines)
@@ -1842,7 +2298,8 @@ def handle_telegram_command(
             telegram_reply(
                 config,
                 chat_id,
-                "Comandos:\n/status\n/tasks\n/pick\n/report TASK-001\n/new texto da task\n\n"
+                "Comandos:\n/status\n/tasks\n/queue\n/pick\n/report TASK-001\n"
+                "/security\n/memory\n/dashboard\n/new texto da task\n\n"
                 "Texto normal, audio e imagem tambem entram no inbox do Harness.",
             )
         item["action"] = "help_sent"
@@ -1854,6 +2311,89 @@ def handle_telegram_command(
         if reply:
             telegram_reply(config, chat_id, telegram_tasks_summary(root))
         item["action"] = "tasks_sent"
+    elif command == "/queue":
+        queue = sorted_queue_items(load_queue(root))
+        lines = ["Fila:"]
+        if not queue:
+            lines.append("- vazia")
+        for queue_item in queue[-20:]:
+            lines.append(f"- {queue_item.get('id')} [{queue_item.get('status')}] {queue_item.get('title')}")
+        if reply:
+            telegram_reply(config, chat_id, "\n".join(lines))
+        item["action"] = "queue_sent"
+    elif command == "/active":
+        active = active_queue_item(root)
+        if active:
+            message = f"{active.get('id')} [{active.get('status')}] {active.get('title')}"
+            if active.get("task_id"):
+                message += f"\nTask: {active.get('task_id')}"
+        else:
+            message = "Nenhum item ativo na fila."
+        if reply:
+            telegram_reply(config, chat_id, message)
+        item["action"] = "active_sent"
+    elif command == "/security":
+        report = read_json(security_root(root) / "scan-latest.json", {})
+        if not report:
+            message = "Nenhum security scan registrado."
+        else:
+            message = f"Security scan: {len(report.get('findings') or [])} finding(s)."
+        if reply:
+            telegram_reply(config, chat_id, message)
+        item["action"] = "security_sent"
+    elif command == "/memory":
+        if reply:
+            telegram_reply(config, chat_id, render_memory_context(root, limit=12))
+        item["action"] = "memory_sent"
+    elif command == "/checkpoint":
+        task_id = rest.strip().upper()
+        if not task_id:
+            active = active_queue_item(root)
+            task_id = str(active.get("task_id") or "") if active else ""
+        if not task_id:
+            message = "Use: /checkpoint TASK-001"
+        else:
+            latest = latest_checkpoint_path(root, task_id)
+            if latest:
+                checkpoint = read_json(latest, {})
+                message = render_resume_brief(root, task_id, checkpoint)
+            else:
+                message = f"Nenhum checkpoint encontrado para {task_id}."
+        if reply:
+            telegram_reply(config, chat_id, message)
+        item["action"] = "checkpoint_sent"
+    elif command == "/budget":
+        active = active_queue_item(root)
+        if active and active.get("task_id"):
+            try:
+                task = find_task(root, active["task_id"])
+                budget = task_budget(task, config)
+                message = f"Budget {active['task_id']}: profile={budget.get('name')} minutes={budget.get('time_budget_minutes')} fixes={budget.get('max_fix_attempts')}"
+            except Exception as exc:
+                message = f"Nao consegui ler budget: {exc}"
+        else:
+            message = "Nenhuma task ativa na fila."
+        if reply:
+            telegram_reply(config, chat_id, message)
+        item["action"] = "budget_sent"
+    elif command == "/artifacts":
+        task_id = rest.strip().upper() or None
+        artifacts = collect_run_artifacts(root, task_id)
+        lines = ["Artifacts:"]
+        if not artifacts:
+            lines.append("- nenhum")
+        for artifact in artifacts[-12:]:
+            lines.append(f"- {artifact.get('label')} ({artifact.get('task_id')}): {artifact.get('path')}")
+        if reply:
+            telegram_reply(config, chat_id, "\n".join(lines))
+        item["action"] = "artifacts_sent"
+    elif command == "/dashboard":
+        state = collect_dashboard_state(root)
+        path = dashboard_root(root) / "index.html"
+        write_text(path, render_dashboard_html(root, state))
+        if reply:
+            telegram_reply(config, chat_id, f"Dashboard atualizado: {path}")
+        item["action"] = "dashboard_built"
     elif command == "/pick":
         pending = next((task for task in load_tasks(root) if task["status"] not in {"passed", "done"}), None)
         if reply:
@@ -2054,6 +2594,251 @@ def command_pick(args: argparse.Namespace) -> None:
     print("Nenhuma task pendente.")
 
 
+def next_queue_id(root: Path) -> str:
+    numbers = []
+    for item in load_queue(root):
+        match = re.match(r"QUEUE-(\d+)$", str(item.get("id", "")))
+        if match:
+            numbers.append(int(match.group(1)))
+    return f"QUEUE-{(max(numbers) + 1) if numbers else 1:03d}"
+
+
+def command_queue_add(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    require_safe_branch(root, args, "queue add")
+    task_id = None
+    title = args.title
+    body = args.body or ""
+    if re.match(r"^TASK-\d+$", args.title):
+        task = find_task(root, args.title)
+        task_id = task["task_id"]
+        title = task["title"]
+        body = read_text(root / task["task_file"])
+    elif args.create_task:
+        task = create_task(root, title, body, "queue")
+        task_id = task["task_id"]
+    queue = load_queue(root)
+    if not args.force and task_id:
+        for item in queue:
+            if item.get("task_id") == task_id and item.get("status") in {"queued", "active"}:
+                raise SystemExit(f"{task_id} ja esta na fila como {item.get('id')}. Use --force para duplicar.")
+    item = {
+        "id": next_queue_id(root),
+        "task_id": task_id,
+        "title": title,
+        "body": body,
+        "status": "queued",
+        "priority": args.priority,
+        "profile": args.profile,
+        "created_at": utc_now(),
+        "updated_at": utc_now(),
+    }
+    queue.append(item)
+    save_queue(root, queue)
+    print(f"{item['id']} queued: {title}")
+    if task_id:
+        print(f"Task: {task_id}")
+
+
+def command_queue_list(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    items = sorted_queue_items(load_queue(root))
+    if args.json:
+        print(json.dumps(items, indent=2, ensure_ascii=False))
+        return
+    if not items:
+        print("Fila vazia.")
+        return
+    for item in items:
+        task = f" {item.get('task_id')}" if item.get("task_id") else ""
+        print(f"{item['id']} [{item.get('status')}] p{item.get('priority')}{task} - {item.get('title')}")
+
+
+def command_queue_next(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    item = active_queue_item(root) if args.include_active else None
+    item = item or next_queued_item(root)
+    if not item:
+        print("Nenhum item pendente na fila.")
+        return
+    if args.activate and item.get("status") == "queued":
+        require_safe_branch(root, args, "queue next --activate")
+        item = update_queue_item(root, item["id"], status="active", activated_at=utc_now())
+    print(f"{item['id']} [{item.get('status')}] {item.get('title')}")
+    if item.get("task_id"):
+        print(f"Task: {item.get('task_id')}")
+    if item.get("body"):
+        print("\n" + str(item.get("body")).strip())
+
+
+def command_queue_done(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    require_safe_branch(root, args, "queue done")
+    item = update_queue_item(
+        root,
+        args.queue_id,
+        status=args.status,
+        completed_at=utc_now() if args.status == "done" else None,
+        note=args.note or "",
+    )
+    if item.get("task_id") and args.status == "done":
+        try:
+            update_task(root, item["task_id"], status="done")
+        except SystemExit:
+            pass
+    print(f"{item['id']} -> {item['status']}")
+
+
+def command_profile_add(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    require_safe_branch(root, args, "profile add")
+    config = load_config(root)
+    profiles = config.setdefault("profiles", {})
+    profiles[args.name] = {
+        "model": args.model,
+        "sandbox": args.sandbox,
+        "approval": args.approval,
+        "description": args.description or "",
+    }
+    write_json(config_path(root), config)
+    print(f"Profile salvo: {args.name}")
+
+
+def command_profile_list(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    config = load_config(root)
+    custom = config.get("profiles", {})
+    if not custom and not operation_profiles(config):
+        print("Nenhum profile configurado.")
+        return
+    for name, profile in operation_profiles(config).items():
+        active = " *" if name == config.get("active_profile", "balanced") else ""
+        print(f"{name}{active}: {profile.get('description', '')} [{profile.get('sensor_tier')}]")
+    for name, profile in custom.items():
+        print(
+            f"{name}: model={profile.get('model') or '-'} "
+            f"sandbox={profile.get('sandbox') or '-'} approval={profile.get('approval') or '-'}"
+        )
+
+
+def command_profile_set(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    require_safe_branch(root, args, "profile set")
+    config = load_config(root)
+    active_profile_name(config, args.name)
+    config["active_profile"] = args.name
+    write_json(config_path(root), config)
+    print(f"Profile ativo: {args.name}")
+
+
+def command_budget_set(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    require_safe_branch(root, args, "budget set")
+    config = load_config(root)
+    budgets = config.setdefault("budgets", {})
+    budgets[args.name] = {
+        "max_tokens": args.max_tokens,
+        "timeout_minutes": args.timeout_minutes,
+        "max_fix_attempts": args.max_fix_attempts,
+    }
+    write_json(config_path(root), config)
+    print(f"Budget salvo: {args.name}")
+
+
+def command_budget_task_set(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    require_safe_branch(root, args, "budget task-set")
+    budget = {
+        "profile": args.profile,
+        "time_budget_minutes": args.minutes,
+        "max_fix_attempts": args.max_fix_attempts,
+        "sensor_tier": args.sensor_tier,
+    }
+    update_task(root, args.task_id, budget={k: v for k, v in budget.items() if v is not None})
+    print(f"Budget da task atualizado: {args.task_id}")
+
+
+def command_budget_list(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    config = load_config(root)
+    budgets = config.get("budgets", {})
+    if not budgets:
+        print("Nenhum budget customizado.")
+        return
+    for name, budget in budgets.items():
+        print(
+            f"{name}: max_tokens={budget.get('max_tokens')} "
+            f"timeout_minutes={budget.get('timeout_minutes')} "
+            f"max_fix_attempts={budget.get('max_fix_attempts')}"
+        )
+
+
+def next_memory_id(root: Path) -> str:
+    numbers = []
+    for entry in load_memory(root):
+        match = re.match(r"MEM-(\d+)$", str(entry.get("id", "")))
+        if match:
+            numbers.append(int(match.group(1)))
+    return f"MEM-{(max(numbers) + 1) if numbers else 1:03d}"
+
+
+def command_memory_remember(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    require_safe_branch(root, args, "memory remember")
+    entries = load_memory(root)
+    entry = {
+        "id": next_memory_id(root),
+        "text": args.text,
+        "tags": args.tag or [],
+        "task_id": args.task_id,
+        "created_at": utc_now(),
+    }
+    entries.append(entry)
+    save_memory(root, entries)
+    print(f"{entry['id']} memorado.")
+
+
+def command_memory_list(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    entries = load_memory(root)
+    if args.tag:
+        entries = [entry for entry in entries if args.tag in set(entry.get("tags") or [])]
+    if args.search:
+        needle = args.search.lower()
+        entries = [entry for entry in entries if needle in str(entry.get("text", "")).lower()]
+    if not entries:
+        print("Nenhuma memoria encontrada.")
+        return
+    for entry in entries[-args.limit :]:
+        tags = ", ".join(entry.get("tags") or [])
+        suffix = f" [{tags}]" if tags else ""
+        print(f"{entry['id']}: {entry.get('text')}{suffix}")
+
+
 def command_contract(args: argparse.Namespace) -> None:
     root = root_from_args(args)
     require_existing_root(root)
@@ -2165,6 +2950,8 @@ def render_builder_brief(
         "- Atualize notas de progresso se comportamento ou escopo mudarem.\n\n"
         "## Arquivos de contexto\n\n"
         f"{summarize_context(root)}\n\n"
+        "## Memoria do projeto\n\n"
+        f"{render_memory_context(root, task['task_id'])}\n\n"
         "## Preflight de contexto\n\n"
         f"```text\n{preflight_text}\n```\n\n"
         "## Tarefa\n\n"
@@ -2208,6 +2995,7 @@ def command_start(args: argparse.Namespace) -> None:
         },
     )
     write_text(run_dir / "builder-brief.md", render_builder_brief(root, task, contract, run_dir))
+    create_checkpoint(root, args.task_id, "run_started", run_dir)
     append_and_maybe_notify_event(root, run_dir, "run_started", {"task_id": args.task_id, "run_id": run_id})
     update_task(root, args.task_id, status="in_progress")
     print(f"Run iniciada para {args.task_id} em {run_dir}")
@@ -2319,6 +3107,7 @@ def command_sensors(args: argparse.Namespace) -> None:
     write_json(run_dir / f"sensors-{tier}.json", payload)
     if tier in {"full", "all"} or not (run_dir / "sensors.json").exists():
         write_json(run_dir / "sensors.json", payload)
+    create_checkpoint(root, args.task_id, f"sensors_{tier}", run_dir, {"sensors": payload})
     append_and_maybe_notify_event(
         root,
         run_dir,
@@ -2355,6 +3144,8 @@ def render_evaluator_brief(root: Path, task: dict[str, Any], contract: dict[str,
         f"```json\n{json.dumps(sensors, indent=2, ensure_ascii=False)}\n```\n\n"
         "## Preflight de contexto\n\n"
         f"```json\n{json.dumps(preflight, indent=2, ensure_ascii=False)}\n```\n\n"
+        "## Memoria do projeto\n\n"
+        f"{render_memory_context(root, task['task_id'])}\n\n"
         "## Status do Git\n\n"
         f"```text\n{status}\n```\n\n"
         "## Estatistica do diff\n\n"
@@ -2746,6 +3537,692 @@ def command_speed_pass(args: argparse.Namespace) -> None:
     command_evaluate(evaluate_args)
 
 
+def next_run_checkpoint_path(run_dir: Path) -> Path:
+    checkpoints = run_dir / "checkpoints"
+    existing = sorted(checkpoints.glob("checkpoint-*.json"))
+    numbers = []
+    for path in existing:
+        match = re.match(r"checkpoint-(\d+)\.json$", path.name)
+        if match:
+            numbers.append(int(match.group(1)))
+    return checkpoints / f"checkpoint-{(max(numbers) + 1) if numbers else 1:03d}.json"
+
+
+def command_checkpoint_create(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    require_safe_branch(root, args, "checkpoint create")
+    find_task(root, args.task_id)
+    run_dir = latest_run_dir_or_none(root, args.task_id)
+    payload = {
+        "task_id": args.task_id,
+        "summary": args.summary or "",
+        "next_steps": args.next or [],
+        "created_at": utc_now(),
+        "run_dir": str(run_dir) if run_dir else None,
+        "git_status": git_output(root, ["status", "--short"]) if is_git_repo(root) else "",
+    }
+    if run_dir:
+        path = next_run_checkpoint_path(run_dir)
+        write_json(path, payload)
+        write_json(run_dir / "checkpoints" / "latest.json", payload)
+    else:
+        path = create_checkpoint(root, args.task_id, args.summary or "manual", extra=payload)
+    create_checkpoint(root, args.task_id, args.summary or "manual", run_dir=run_dir, extra=payload)
+    print(f"Checkpoint escrito: {path}")
+
+
+def command_checkpoint_resume_plan(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    find_task(root, args.task_id)
+    run_dir = latest_run_dir_or_none(root, args.task_id)
+    checkpoint: dict[str, Any] = {}
+    if run_dir and (run_dir / "checkpoints" / "latest.json").exists():
+        checkpoint = read_json(run_dir / "checkpoints" / "latest.json", {})
+    else:
+        latest = latest_checkpoint_path(root, args.task_id)
+        if latest:
+            checkpoint = read_json(latest, {})
+    if not checkpoint:
+        checkpoint = {"task_id": args.task_id, "summary": "Sem checkpoint anterior.", "next_steps": []}
+    plan = render_resume_brief(root, args.task_id, checkpoint)
+    if checkpoint.get("summary"):
+        plan += f"\n## Ultimo resumo\n\n{checkpoint.get('summary')}\n"
+    if checkpoint.get("next_steps"):
+        plan += "\n## Proximos passos salvos\n\n" + "\n".join(
+            f"- {step}" for step in checkpoint.get("next_steps", [])
+        ) + "\n"
+    target_dir = run_dir if run_dir else checkpoints_root(root, args.task_id)
+    path = target_dir / "resume-plan.md"
+    write_text(path, plan)
+    print(plan)
+    print(f"\nResume plan escrito: {path}")
+
+
+def command_artifacts_add(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    require_safe_branch(root, args, "artifacts add")
+    source = resolve_repo_path(root, args.path)
+    if not source.exists():
+        raise SystemExit(f"Artifact nao encontrado: {source}")
+    assert_inside_root(root, source, label="artifact")
+    task_id = args.task_id
+    run_id = None
+    target_path = source
+    if args.copy:
+        run_dir = latest_run_dir_or_none(root, task_id)
+        run_id = run_dir.name if run_dir else "manual"
+        target_dir = artifacts_root(root) / task_id / run_id
+        target_path = target_dir / source.name
+        target_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target_path)
+    entry = {
+        "id": artifact_id(task_id, target_path),
+        "task_id": task_id,
+        "run_id": run_id,
+        "path": to_posix(target_path.relative_to(root)),
+        "kind": args.kind or target_path.suffix.lstrip(".") or "file",
+        "label": args.label or target_path.name,
+        "size": target_path.stat().st_size,
+        "sha256": file_sha256(target_path),
+        "created_at": utc_now(),
+    }
+    artifacts = [item for item in load_artifacts(root) if item.get("id") != entry["id"]]
+    artifacts.append(entry)
+    save_artifacts(root, artifacts)
+    print(f"Artifact registrado: {entry['id']} {entry['path']}")
+
+
+def command_artifacts_list(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    artifacts = collect_run_artifacts(root, args.task_id)
+    if args.json:
+        print(json.dumps(artifacts, indent=2, ensure_ascii=False))
+        return
+    if not artifacts:
+        print("Nenhum artifact encontrado.")
+        return
+    for item in artifacts:
+        print(f"{item['id']} {item.get('task_id')} {item.get('label')} - {item.get('path')}")
+
+
+def command_plugin_add(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    require_safe_branch(root, args, "plugin add")
+    plugins = [plugin for plugin in load_plugins(root) if plugin.get("name") != args.name]
+    plugins.append(
+        {
+            "name": args.name,
+            "path": args.path,
+            "command": args.command,
+            "events": args.event or [],
+            "description": args.description or "",
+            "enabled": not args.disabled,
+            "created_at": utc_now(),
+            "updated_at": utc_now(),
+        }
+    )
+    save_plugins(root, plugins)
+    print(f"Plugin registrado: {args.name}")
+
+
+def command_plugin_list(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    plugins = load_plugins(root)
+    if not plugins:
+        print("Nenhum plugin registrado.")
+        return
+    for plugin in plugins:
+        enabled = "on" if config_bool(plugin.get("enabled"), True) else "off"
+        location = plugin.get("path") or plugin.get("command") or "-"
+        print(f"{plugin.get('name')} [{enabled}] {location} - {plugin.get('description', '')}")
+
+
+def command_plugin_set_enabled(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    require_safe_branch(root, args, f"plugin {args.plugin_command}")
+    plugins = load_plugins(root)
+    for plugin in plugins:
+        if plugin.get("name") == args.name:
+            plugin["enabled"] = args.plugin_command == "enable"
+            plugin["updated_at"] = utc_now()
+            save_plugins(root, plugins)
+            print(f"Plugin {args.name}: {'on' if plugin['enabled'] else 'off'}")
+            return
+    raise SystemExit(f"Plugin nao encontrado: {args.name}")
+
+
+def command_plugin_run(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    plugins = [
+        plugin
+        for plugin in load_plugins(root)
+        if config_bool(plugin.get("enabled"), True)
+        and plugin.get("command")
+        and (not plugin.get("events") or args.event in plugin.get("events", []))
+    ]
+    if not plugins:
+        print("Nenhum plugin habilitado para este evento.")
+        return
+    results = []
+    for plugin in plugins:
+        command = str(plugin["command"]).format(repo=str(root), task_id=args.task_id or "", event=args.event)
+        argv = split_sensor_command(command)
+        print(f"Plugin {plugin.get('name')}: {command}")
+        if args.dry_run:
+            results.append({"plugin": plugin.get("name"), "command": command, "dry_run": True})
+            continue
+        result = subprocess.run(
+            resolve_sensor_argv(argv),
+            cwd=root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=args.timeout,
+        )
+        results.append(
+            {
+                "plugin": plugin.get("name"),
+                "command": command,
+                "exit_code": result.returncode,
+                "stdout": result.stdout[-4000:],
+                "stderr": result.stderr[-4000:],
+            }
+        )
+    append_jsonl(harness_root(root) / "plugins" / "runs.jsonl", {"ts": utc_now(), "event": args.event, "results": results})
+
+
+def iter_security_scan_files(root: Path, tracked_only: bool = True) -> list[Path]:
+    if tracked_only and is_git_repo(root):
+        output = git_output(root, ["ls-files"])
+        return [root / line.strip() for line in output.splitlines() if line.strip()]
+    files = []
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        if any(part in SECURITY_EXCLUDED_DIRS for part in path.relative_to(root).parts):
+            continue
+        files.append(path)
+    return files
+
+
+def is_probably_text(path: Path) -> bool:
+    try:
+        sample = path.read_bytes()[:4096]
+    except OSError:
+        return False
+    return b"\0" not in sample
+
+
+def scan_file_for_secrets(root: Path, path: Path) -> list[dict[str, Any]]:
+    if any(part in SECURITY_EXCLUDED_DIRS for part in path.relative_to(root).parts):
+        return []
+    if not is_probably_text(path):
+        return []
+    findings = []
+    try:
+        lines = read_text(path).splitlines()
+    except UnicodeDecodeError:
+        return []
+    for line_number, line in enumerate(lines, start=1):
+        for kind, pattern in SECRET_PATTERNS:
+            match = pattern.search(line)
+            if not match:
+                continue
+            value = match.group(0)
+            redacted = value[:8] + "..." + value[-4:] if len(value) > 16 else "[redacted]"
+            findings.append(
+                {
+                    "kind": kind,
+                    "path": relative_to_root(root, path),
+                    "line": line_number,
+                    "match": redacted,
+                }
+            )
+    return findings
+
+
+def command_security_scan(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    files = iter_security_scan_files(root, tracked_only=not args.include_untracked)
+    findings: list[dict[str, Any]] = []
+    for file in files:
+        if file.exists():
+            findings.extend(scan_file_for_secrets(root, file))
+    report = {
+        "created_at": utc_now(),
+        "tracked_only": not args.include_untracked,
+        "files_scanned": len(files),
+        "findings": findings,
+    }
+    path = security_root(root) / "scan-latest.json"
+    write_json(path, report)
+    if args.json:
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+    else:
+        print(f"Security scan: {len(findings)} finding(s), {len(files)} arquivo(s).")
+        for finding in findings:
+            print(f"- {finding['kind']} {finding['path']}:{finding['line']}")
+        print(f"Relatorio: {path}")
+    if findings:
+        raise SystemExit(1)
+
+
+def command_security_status(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    path = security_root(root) / "scan-latest.json"
+    if not path.exists():
+        print("Nenhum security scan registrado.")
+        return
+    report = read_json(path, {})
+    print(f"Ultimo scan: {report.get('created_at')}")
+    print(f"Findings: {len(report.get('findings') or [])}")
+
+
+def collect_dashboard_state(root: Path) -> dict[str, Any]:
+    config = load_config(root)
+    security_report = read_json(security_root(root) / "scan-latest.json", {})
+    return {
+        "project": config.get("project_name") or root.name,
+        "root": str(root),
+        "generated_at": utc_now(),
+        "active_profile": config.get("active_profile", "balanced"),
+        "tasks": load_tasks(root),
+        "queue": sorted_queue_items(load_queue(root)),
+        "artifacts": collect_run_artifacts(root),
+        "memory": load_memory(root),
+        "plugins": load_plugins(root),
+        "security": security_report,
+        "unevaluated_runs": find_unevaluated_runs(root),
+    }
+
+
+def render_dashboard_html(root: Path, state: dict[str, Any]) -> str:
+    def esc(value: Any) -> str:
+        return html.escape(str(value or ""))
+
+    task_rows = "\n".join(
+        f"<tr><td>{esc(task.get('task_id'))}</td><td>{esc(task.get('status'))}</td><td>{esc(task.get('title'))}</td></tr>"
+        for task in state["tasks"]
+    ) or "<tr><td colspan='3'>Nenhuma task.</td></tr>"
+    queue_rows = "\n".join(
+        f"<tr><td>{esc(item.get('id'))}</td><td>{esc(item.get('status'))}</td><td>{esc(item.get('title'))}</td></tr>"
+        for item in state["queue"]
+    ) or "<tr><td colspan='3'>Fila vazia.</td></tr>"
+    artifact_rows = "\n".join(
+        f"<tr><td>{esc(item.get('task_id'))}</td><td>{esc(item.get('label'))}</td><td>{esc(item.get('path'))}</td></tr>"
+        for item in state["artifacts"][:80]
+    ) or "<tr><td colspan='3'>Nenhum artifact.</td></tr>"
+    memory_items = "\n".join(
+        f"<li>{esc(item.get('text'))}</li>" for item in state["memory"][-12:]
+    ) or "<li>Nenhuma memoria registrada.</li>"
+    plugins = "\n".join(
+        f"<li>{esc(plugin.get('name'))} - {esc(plugin.get('description'))}</li>" for plugin in state["plugins"]
+    ) or "<li>Nenhum plugin registrado.</li>"
+    security_count = len(state.get("security", {}).get("findings") or [])
+    return f"""<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Harness Dashboard - {esc(state['project'])}</title>
+  <style>
+    :root {{ color-scheme: light; font-family: Arial, sans-serif; }}
+    body {{ margin: 0; background: #f6f7f9; color: #1f2933; }}
+    header {{ background: #16213a; color: white; padding: 24px 32px; }}
+    main {{ padding: 24px 32px; display: grid; gap: 20px; }}
+    section {{ background: white; border: 1px solid #d8dee8; border-radius: 8px; padding: 18px; }}
+    h1, h2 {{ margin: 0 0 12px; }}
+    table {{ width: 100%; border-collapse: collapse; }}
+    th, td {{ border-bottom: 1px solid #e5e9f0; padding: 8px; text-align: left; vertical-align: top; }}
+    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; }}
+    .metric {{ font-size: 24px; font-weight: 700; }}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Harness Dashboard</h1>
+    <div>{esc(state['project'])} - {esc(state['generated_at'])} - profile {esc(state['active_profile'])}</div>
+  </header>
+  <main>
+    <div class="grid">
+      <section><h2>Tasks</h2><div class="metric">{len(state['tasks'])}</div></section>
+      <section><h2>Fila</h2><div class="metric">{len(state['queue'])}</div></section>
+      <section><h2>Security</h2><div class="metric">{security_count} finding(s)</div></section>
+    </div>
+    <section><h2>Tasks</h2><table><tbody>{task_rows}</tbody></table></section>
+    <section><h2>Fila</h2><table><tbody>{queue_rows}</tbody></table></section>
+    <section><h2>Artifacts</h2><table><tbody>{artifact_rows}</tbody></table></section>
+    <div class="grid">
+      <section><h2>Memoria</h2><ul>{memory_items}</ul></section>
+      <section><h2>Plugins</h2><ul>{plugins}</ul></section>
+    </div>
+  </main>
+</body>
+</html>
+"""
+
+
+def command_dashboard_html(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    state = collect_dashboard_state(root)
+    path = dashboard_root(root) / "index.html"
+    write_text(path, render_dashboard_html(root, state))
+    write_json(dashboard_root(root) / "state.json", state)
+    print(f"Dashboard HTML: {path}")
+
+
+def command_dashboard_serve(args: argparse.Namespace) -> None:
+    import functools
+    import http.server
+
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    command_dashboard_html(argparse.Namespace(repo=args.repo))
+    directory = dashboard_root(root)
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(directory))
+    server = http.server.ThreadingHTTPServer((args.host, args.port), handler)
+    print(f"Dashboard em http://{args.host}:{args.port}/")
+    try:
+        if args.once:
+            server.handle_request()
+        else:
+            server.serve_forever()
+    finally:
+        server.server_close()
+
+
+def supervisor_recommendation(root: Path, item: dict[str, Any]) -> str:
+    task_id = item.get("task_id")
+    if not task_id:
+        return "Item de fila sem task. Use `queue add --create-task` ou crie uma task a partir do corpo."
+    task = find_task(root, task_id)
+    status = task.get("status")
+    if not contract_file_path(root, task_id).exists():
+        return f"Criar contrato: python {Path(__file__).resolve()} --repo {root} contract {task_id}"
+    if status in {"planned", "contracted"}:
+        return f"Iniciar: python {Path(__file__).resolve()} --repo {root} start {task_id}"
+    if status in {"in_progress", "sensors_failed", "needs_work"}:
+        contract = load_contract(root, task_id)
+        tier = fastest_available_sensor_tier(contract)
+        return f"Rodar sensores: python {Path(__file__).resolve()} --repo {root} sensors {task_id} --tier {tier} --reviewed"
+    if status == "sensors_passed":
+        return f"Avaliar: python {Path(__file__).resolve()} --repo {root} evaluate {task_id}"
+    if status in {"passed", "done"}:
+        return f"Fechar fila: python {Path(__file__).resolve()} --repo {root} queue done {item.get('id')}"
+    return "Revisar status manualmente."
+
+
+def supervisor_tick(root: Path, args: argparse.Namespace) -> dict[str, Any]:
+    item = active_queue_item(root)
+    activated = False
+    if not item:
+        item = next_queued_item(root)
+        if item and args.activate:
+            item = update_queue_item(root, item["id"], status="active", activated_at=utc_now())
+            activated = True
+    recommendation = supervisor_recommendation(root, item) if item else "Fila vazia."
+    if item and args.auto_start and item.get("task_id"):
+        task = find_task(root, item["task_id"])
+        if task.get("status") in {"planned", "contracted"} and contract_file_path(root, item["task_id"]).exists():
+            command_start(
+                argparse.Namespace(
+                    repo=args.repo,
+                    allow_main=args.allow_main,
+                    task_id=item["task_id"],
+                    skip_preflight=args.skip_preflight,
+                )
+            )
+            recommendation = "Run iniciada automaticamente."
+    payload = {
+        "updated_at": utc_now(),
+        "counts": queue_counts(root),
+        "active_item": item,
+        "activated": activated,
+        "recommendation": recommendation,
+    }
+    write_json(supervisor_state_path(root), payload)
+    if item and item.get("task_id"):
+        create_checkpoint(root, item["task_id"], "supervisor_tick", latest_run_dir_or_none(root, item["task_id"]), payload)
+    return payload
+
+
+def command_supervisor_status(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    state = read_json(supervisor_state_path(root), {})
+    counts = queue_counts(root)
+    print("Supervisor:")
+    print(f"- ultimo tick: {state.get('updated_at') or 'nenhum'}")
+    print(f"- fila: {counts}")
+    if state.get("recommendation"):
+        print(f"- recomendacao: {state['recommendation']}")
+
+
+def command_supervisor_tick(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    require_safe_branch(root, args, "supervisor tick")
+    payload = supervisor_tick(root, args)
+    print(json.dumps(payload, indent=2, ensure_ascii=False) if args.json else payload["recommendation"])
+
+
+def command_supervisor_run(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    require_safe_branch(root, args, "supervisor run")
+    ticks = 0
+    while True:
+        payload = supervisor_tick(root, args)
+        ticks += 1
+        print(f"[{ticks}] {payload['recommendation']}")
+        if args.max_ticks and ticks >= args.max_ticks:
+            break
+        if args.once or not payload.get("active_item"):
+            break
+        time.sleep(args.interval)
+
+
+def render_github_pr_body(root: Path, task_id: str) -> str:
+    task = find_task(root, task_id)
+    report_path = harness_root(root) / "reports" / f"{task_id}.md"
+    run_dir = latest_run_dir_or_none(root, task_id)
+    plain = read_text(run_dir / "plain-summary.md") if run_dir and (run_dir / "plain-summary.md").exists() else ""
+    report = read_text(report_path) if report_path.exists() else ""
+    security = read_json(security_root(root) / "scan-latest.json", {})
+    security_line = f"{len(security.get('findings') or [])} finding(s)" if security else "nao executado"
+    return (
+        f"# {task_id} - {task.get('title')}\n\n"
+        "## Resumo simples\n\n"
+        f"{plain or 'Resumo simples ainda nao gerado.'}\n\n"
+        "## Evidencia Harness\n\n"
+        f"- Status da task: {task.get('status')}\n"
+        f"- Security scan: {security_line}\n"
+        f"- Relatorio: `{to_posix(report_path.relative_to(root)) if report_path.exists() else 'pendente'}`\n\n"
+        "## Relatorio completo\n\n"
+        f"{report or 'Relatorio ainda nao gerado.'}\n"
+    )
+
+
+def command_github_configure(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    require_safe_branch(root, args, "github configure")
+    config = load_config(root)
+    gconfig = github_config(config)
+    if args.repo:
+        gconfig["repo"] = args.repo
+    if args.remote:
+        gconfig["remote"] = args.remote
+    if args.base:
+        gconfig["default_base"] = args.base
+    config["github"] = gconfig
+    write_json(config_path(root), config)
+    print(f"GitHub repo: {gconfig.get('repo') or 'nao configurado'}")
+
+
+def command_github_status(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    gconfig = github_config(load_config(root))
+    print(f"repo: {gconfig.get('repo') or 'nao configurado'}")
+    print(f"remote: {gconfig.get('remote')}")
+    print(f"base: {gconfig.get('default_base')}")
+    print(f"gh CLI: {shutil.which('gh') or 'nao encontrado'}")
+
+
+def command_github_pr_body(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    body = render_github_pr_body(root, args.task_id)
+    path = Path(args.out).expanduser().resolve() if args.out else github_root(root) / f"{args.task_id}-pr-body.md"
+    assert_inside_root(root, path, label="github pr-body out")
+    write_text(path, body)
+    print(body if args.print else f"PR body escrito: {path}")
+
+
+def command_github_pr_create(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    require_safe_branch(root, args, "github pr-create")
+    config = load_config(root)
+    gconfig = github_config(config)
+    task = find_task(root, args.task_id)
+    body_path = github_root(root) / f"{args.task_id}-pr-body.md"
+    write_text(body_path, render_github_pr_body(root, args.task_id))
+    title = args.title or f"{args.task_id}: {task.get('title')}"
+    base = args.base or gconfig.get("default_base") or "main"
+    argv = ["gh", "pr", "create", "--title", title, "--body-file", str(body_path), "--base", base]
+    if args.head:
+        argv.extend(["--head", args.head])
+    if args.dry_run or not shutil.which("gh"):
+        print("Dry-run gh command:")
+        print(" ".join(shlex.quote(part) for part in argv))
+        return
+    result = subprocess.run(argv, cwd=root, text=True, capture_output=True, encoding="utf-8", errors="replace")
+    if result.returncode != 0:
+        raise SystemExit(result.stderr.strip() or "gh pr create falhou")
+    print(result.stdout.strip())
+
+
+def command_github_issue_import(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    require_safe_branch(root, args, "github issue-import")
+    if not shutil.which("gh"):
+        raise SystemExit("gh CLI nao encontrado. Instale/configure `gh` ou crie a task manualmente.")
+    result = subprocess.run(
+        ["gh", "issue", "view", args.issue, "--json", "title,body,url"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        raise SystemExit(result.stderr.strip() or "gh issue view falhou")
+    payload = json.loads(result.stdout)
+    task = create_task(root, payload.get("title") or f"Issue {args.issue}", payload.get("body") or "", payload.get("url") or args.issue)
+    print(f"Importado GitHub issue -> {task['task_id']}: {task['title']}")
+
+
+def command_policy_show(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    config = load_config(root)
+    print(json.dumps({"failure_policy": failure_policy(config), "review_policy": review_policy(config)}, indent=2, ensure_ascii=False))
+
+
+def command_policy_set(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    require_safe_branch(root, args, "policy set")
+    config = load_config(root)
+    policy = failure_policy(config)
+    if args.max_fix_attempts is not None:
+        policy["max_fix_attempts"] = args.max_fix_attempts
+    if args.auto_fix_brief is not None:
+        policy["auto_fix_brief"] = args.auto_fix_brief
+    if args.p2_blocks is not None:
+        policy["p2_blocks"] = args.p2_blocks
+        config.setdefault("review_policy", {}).setdefault("blocking_findings", {})["p2"] = args.p2_blocks
+    if args.warn_unevaluated is not None:
+        config.setdefault("policy", {})["warn_on_unevaluated_runs"] = args.warn_unevaluated
+    config["failure_policy"] = policy
+    write_json(config_path(root), config)
+    print("Policy atualizada.")
+
+
+def command_failure_apply(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    require_safe_branch(root, args, "failure apply")
+    config = load_config(root)
+    task = find_task(root, args.task_id)
+    contract = load_contract(root, args.task_id)
+    run_dir = latest_run_dir(root, args.task_id)
+    review_text = "\n\n".join(read_text(Path(file).expanduser().resolve()) for file in args.review_file or [])
+    review_text += "\n\n" + "\n\n".join(args.review_note or [])
+    evaluator_text = "\n\n".join(read_text(Path(file).expanduser().resolve()) for file in args.evaluator_file or [])
+    evaluator_text += "\n\n" + "\n\n".join(args.evaluator_note or [])
+    blockers = blocking_findings_from_review(review_text, config)
+    evaluator_failed = bool(re.search(r"\bFAIL\b", evaluator_text, re.IGNORECASE))
+    decision = {
+        "task_id": args.task_id,
+        "created_at": utc_now(),
+        "blockers": blockers,
+        "evaluator_failed": evaluator_failed,
+        "status": "blocked" if blockers or evaluator_failed else "clear",
+    }
+    write_json(run_dir / "failure-decision.json", decision)
+    if decision["status"] == "blocked":
+        update_task(root, args.task_id, status="needs_work")
+        if config_bool(failure_policy(config).get("auto_fix_brief"), True):
+            brief = render_fix_brief(root, task, contract, run_dir, review_text, evaluator_text, config)
+            path = next_fix_brief_path(run_dir)
+            write_text(path, brief)
+            write_text(run_dir / "fix-brief-latest.md", brief)
+            print(f"Bloqueado. Fix brief: {path}")
+        else:
+            print("Bloqueado. Auto fix brief desligado.")
+    else:
+        print("Nenhum bloqueador detectado.")
+
+
 def command_evaluate(args: argparse.Namespace) -> None:
     root = root_from_args(args)
     require_existing_root(root)
@@ -2833,6 +4310,7 @@ def command_evaluate(args: argparse.Namespace) -> None:
     plain_summary = render_plain_summary(task, contract, sensors, evaluation)
     plain_summary_path = run_dir / "plain-summary.md"
     write_text(plain_summary_path, plain_summary)
+    create_checkpoint(root, args.task_id, f"evaluation_{args.status}", run_dir, {"evaluation": evaluation})
     append_and_maybe_notify_event(
         root,
         run_dir,
@@ -2880,6 +4358,7 @@ def command_report(args: argparse.Namespace) -> None:
     report = render_report(root, task, contract, run_dir, sensors, evaluation, plain_summary)
     report_path = harness_root(root) / "reports" / f"{args.task_id}.md"
     write_text(report_path, report)
+    create_checkpoint(root, args.task_id, "report_created", run_dir, {"report_path": str(report_path)})
     append_and_maybe_notify_event(
         root,
         run_dir,
@@ -3402,6 +4881,8 @@ def render_report(
         f"{chr(10).join(sensor_lines)}\n\n"
         "## Preflight de contexto\n\n"
         f"```text\n{preflight_text}\n```\n\n"
+        "## Memoria do projeto\n\n"
+        f"{render_memory_context(root, task['task_id'])}\n\n"
         "## Avaliacao\n\n"
         f"Status: {evaluation.get('status', 'nao-registrado')}\n\n"
         f"{evaluation.get('notes', 'Nenhuma nota de avaliacao registrada.')}\n\n"
@@ -3446,6 +4927,14 @@ def command_status(args: argparse.Namespace) -> None:
     print(f"- habilitado: {str(config_bool(tconfig.get('enabled'), False)).lower()}")
     print(f"- chats de notificacao: {', '.join(str(item) for item in tconfig.get('chat_ids', [])) or 'nenhum'}")
     print(f"- criacao de task: {str(config_bool(tconfig.get('allow_task_creation'), True)).lower()}")
+
+    print("\nOperacao:")
+    print(f"- profile ativo: {config.get('active_profile', 'balanced')}")
+    counts = queue_counts(root)
+    print(f"- fila: {counts if counts else 'vazia'}")
+    security = read_json(security_root(root) / "scan-latest.json", {})
+    if security:
+        print(f"- security findings: {len(security.get('findings') or [])}")
 
     print("\nContexto obrigatorio:")
     requirements = context_requirements_for_task(root, config)
@@ -3508,6 +4997,78 @@ def build_parser() -> argparse.ArgumentParser:
     pick = sub.add_parser("pick", help="Mostra a proxima task pendente")
     pick.set_defaults(func=command_pick)
 
+    queue = sub.add_parser("queue", help="Gerencia fila de trabalho")
+    queue_sub = queue.add_subparsers(dest="queue_command", required=True)
+    queue_add = queue_sub.add_parser("add", help="Adiciona item ou task na fila")
+    queue_add.add_argument("title", help="Titulo do item ou TASK-001 existente")
+    queue_add.add_argument("--body", help="Corpo/prompt do item")
+    queue_add.add_argument("--priority", type=int, default=100, help="Prioridade menor roda antes")
+    queue_add.add_argument("--profile", help="Profile sugerido para o item")
+    queue_add.add_argument("--create-task", action="store_true", help="Cria tambem uma task Harness")
+    queue_add.add_argument("--force", action="store_true", help="Permite duplicar task na fila")
+    queue_add.set_defaults(func=command_queue_add)
+
+    queue_list = queue_sub.add_parser("list", help="Lista a fila")
+    queue_list.add_argument("--json", action="store_true", help="Imprime JSON")
+    queue_list.set_defaults(func=command_queue_list)
+
+    queue_next = queue_sub.add_parser("next", help="Mostra o proximo item")
+    queue_next.add_argument("--activate", action="store_true", help="Marca o item como ativo")
+    queue_next.add_argument("--include-active", action="store_true", help="Prefere item ativo se existir")
+    queue_next.set_defaults(func=command_queue_next)
+
+    queue_done = queue_sub.add_parser("done", help="Marca item como concluido")
+    queue_done.add_argument("queue_id")
+    queue_done.add_argument("--status", choices=["done", "skipped", "blocked"], default="done")
+    queue_done.add_argument("--note", help="Nota de fechamento")
+    queue_done.set_defaults(func=command_queue_done)
+
+    profile = sub.add_parser("profile", help="Gerencia profiles de operacao/agentes")
+    profile_sub = profile.add_subparsers(dest="profile_command", required=True)
+    profile_add = profile_sub.add_parser("add", help="Adiciona profile customizado")
+    profile_add.add_argument("name")
+    profile_add.add_argument("--model")
+    profile_add.add_argument("--sandbox", choices=["read-only", "workspace-write", "danger-full-access"])
+    profile_add.add_argument("--approval", choices=["untrusted", "on-failure", "on-request", "never"])
+    profile_add.add_argument("--description")
+    profile_add.set_defaults(func=command_profile_add)
+    profile_list = profile_sub.add_parser("list", help="Lista profiles")
+    profile_list.set_defaults(func=command_profile_list)
+    profile_set = profile_sub.add_parser("set", help="Define profile operacional ativo")
+    profile_set.add_argument("name", choices=list(DEFAULT_OPERATION_PROFILES.keys()))
+    profile_set.set_defaults(func=command_profile_set)
+
+    budget = sub.add_parser("budget", help="Gerencia budgets")
+    budget_sub = budget.add_subparsers(dest="budget_command", required=True)
+    budget_set = budget_sub.add_parser("set", help="Salva budget por profile/agente")
+    budget_set.add_argument("name")
+    budget_set.add_argument("--max-tokens", type=int)
+    budget_set.add_argument("--timeout-minutes", type=int)
+    budget_set.add_argument("--max-fix-attempts", type=int)
+    budget_set.set_defaults(func=command_budget_set)
+    budget_task = budget_sub.add_parser("task-set", help="Salva budget em uma task")
+    budget_task.add_argument("task_id")
+    budget_task.add_argument("--profile")
+    budget_task.add_argument("--minutes", type=int)
+    budget_task.add_argument("--max-fix-attempts", type=int)
+    budget_task.add_argument("--sensor-tier", choices=["quick", "smoke", "affected", "full", "all"])
+    budget_task.set_defaults(func=command_budget_task_set)
+    budget_list = budget_sub.add_parser("list", help="Lista budgets customizados")
+    budget_list.set_defaults(func=command_budget_list)
+
+    memory = sub.add_parser("memory", help="Memoria operacional do projeto")
+    memory_sub = memory.add_subparsers(dest="memory_command", required=True)
+    memory_remember = memory_sub.add_parser("remember", help="Registra memoria")
+    memory_remember.add_argument("text")
+    memory_remember.add_argument("--tag", action="append")
+    memory_remember.add_argument("--task-id")
+    memory_remember.set_defaults(func=command_memory_remember)
+    memory_list = memory_sub.add_parser("list", help="Lista memoria")
+    memory_list.add_argument("--tag")
+    memory_list.add_argument("--search")
+    memory_list.add_argument("--limit", type=int, default=50)
+    memory_list.set_defaults(func=command_memory_list)
+
     contract = sub.add_parser("contract", help="Cria/atualiza contrato de uma task")
     contract.add_argument("task_id")
     contract.add_argument("--goal", help="Objetivo")
@@ -3532,6 +5093,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     start.set_defaults(func=command_start)
 
+    checkpoint = sub.add_parser("checkpoint", help="Cria e usa checkpoints de retomada")
+    checkpoint_sub = checkpoint.add_subparsers(dest="checkpoint_command", required=True)
+    checkpoint_create = checkpoint_sub.add_parser("create", help="Cria checkpoint manual")
+    checkpoint_create.add_argument("task_id")
+    checkpoint_create.add_argument("--summary", help="Resumo simples do ponto atual")
+    checkpoint_create.add_argument("--next", action="append", help="Proximo passo salvo; repetivel")
+    checkpoint_create.set_defaults(func=command_checkpoint_create)
+    checkpoint_resume = checkpoint_sub.add_parser("resume-plan", help="Gera plano de retomada")
+    checkpoint_resume.add_argument("task_id")
+    checkpoint_resume.set_defaults(func=command_checkpoint_resume_plan)
+
+    resume = sub.add_parser("resume", help="Alias para checkpoint resume-plan")
+    resume.add_argument("task_id")
+    resume.set_defaults(func=command_checkpoint_resume_plan)
+
     sensors = sub.add_parser("sensors", help="Roda sensores deterministicos da ultima run")
     sensors.add_argument("task_id")
     sensors.add_argument("--command", action="append", help="Sobrescreve/adiciona comando de sensor; repetivel")
@@ -3551,6 +5127,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximo de caracteres de stdout/stderr armazenados por comando",
     )
     sensors.set_defaults(func=command_sensors)
+
+    security = sub.add_parser("security", help="Scanner local de segredos")
+    security_sub = security.add_subparsers(dest="security_command", required=True)
+    security_scan = security_sub.add_parser("scan", help="Procura secrets em arquivos versionados")
+    security_scan.add_argument("--include-untracked", action="store_true", help="Inclui arquivos nao rastreados")
+    security_scan.add_argument("--fail-on-findings", action="store_true", help="Falha quando houver achados")
+    security_scan.add_argument("--json", action="store_true", help="Imprime JSON")
+    security_scan.set_defaults(func=command_security_scan)
+    security_status = security_sub.add_parser("status", help="Mostra ultimo scan")
+    security_status.set_defaults(func=command_security_status)
 
     evaluate = sub.add_parser("evaluate", help="Cria brief/handoff do avaliador ou registra avaliacao")
     evaluate.add_argument("task_id")
@@ -3581,6 +5167,88 @@ def build_parser() -> argparse.ArgumentParser:
         speed.add_argument("--max-output-chars", type=int, default=12000, help="Maximo de caracteres armazenados")
         speed.set_defaults(func=command_speed_pass)
 
+    artifacts = sub.add_parser("artifacts", help="Lista/registra artifacts da run")
+    artifacts_sub = artifacts.add_subparsers(dest="artifacts_command", required=True)
+    artifacts_add = artifacts_sub.add_parser("add", help="Registra artifact manual")
+    artifacts_add.add_argument("task_id")
+    artifacts_add.add_argument("path")
+    artifacts_add.add_argument("--label")
+    artifacts_add.add_argument("--kind")
+    artifacts_add.add_argument("--copy", action="store_true", help="Copia arquivo para .harness/artifacts")
+    artifacts_add.set_defaults(func=command_artifacts_add)
+    artifacts_list = artifacts_sub.add_parser("list", help="Lista artifacts")
+    artifacts_list.add_argument("task_id", nargs="?")
+    artifacts_list.add_argument("--json", action="store_true")
+    artifacts_list.set_defaults(func=command_artifacts_list)
+
+    supervisor = sub.add_parser("supervisor", help="Loop supervisor da fila")
+    supervisor_sub = supervisor.add_subparsers(dest="supervisor_command", required=True)
+    supervisor_status = supervisor_sub.add_parser("status", help="Mostra estado do supervisor")
+    supervisor_status.set_defaults(func=command_supervisor_status)
+    supervisor_tick_p = supervisor_sub.add_parser("tick", help="Executa um tick do supervisor")
+    supervisor_tick_p.add_argument("--activate", action="store_true", help="Ativa proximo item da fila")
+    supervisor_tick_p.add_argument("--auto-start", action="store_true", help="Inicia run automaticamente quando seguro")
+    supervisor_tick_p.add_argument("--skip-preflight", action="store_true")
+    supervisor_tick_p.add_argument("--json", action="store_true")
+    supervisor_tick_p.set_defaults(func=command_supervisor_tick)
+    supervisor_run = supervisor_sub.add_parser("run", help="Roda supervisor em loop")
+    supervisor_run.add_argument("--activate", action="store_true")
+    supervisor_run.add_argument("--auto-start", action="store_true")
+    supervisor_run.add_argument("--skip-preflight", action="store_true")
+    supervisor_run.add_argument("--interval", type=float, default=10.0)
+    supervisor_run.add_argument("--max-ticks", type=int, default=0)
+    supervisor_run.add_argument("--once", action="store_true")
+    supervisor_run.set_defaults(func=command_supervisor_run)
+
+    policy = sub.add_parser("policy", help="Politicas de falha/revisao")
+    policy_sub = policy.add_subparsers(dest="policy_command", required=True)
+    policy_show = policy_sub.add_parser("show", help="Mostra politicas")
+    policy_show.set_defaults(func=command_policy_show)
+    policy_set = policy_sub.add_parser("set", help="Atualiza politica")
+    policy_set.add_argument("--max-fix-attempts", type=int)
+    policy_set.add_argument("--auto-fix-brief", dest="auto_fix_brief", action="store_true", default=None)
+    policy_set.add_argument("--no-auto-fix-brief", dest="auto_fix_brief", action="store_false")
+    policy_set.add_argument("--p2-blocks", dest="p2_blocks", action="store_true", default=None)
+    policy_set.add_argument("--p2-does-not-block", dest="p2_blocks", action="store_false")
+    policy_set.add_argument("--warn-unevaluated", dest="warn_unevaluated", action="store_true", default=None)
+    policy_set.add_argument("--no-warn-unevaluated", dest="warn_unevaluated", action="store_false")
+    policy_set.set_defaults(func=command_policy_set)
+
+    failure = sub.add_parser("failure", help="Aplica politica de P0/P1/falhas")
+    failure_sub = failure.add_subparsers(dest="failure_command", required=True)
+    failure_apply = failure_sub.add_parser("apply", help="Analisa saidas de avaliador/reviewer")
+    failure_apply.add_argument("task_id")
+    failure_apply.add_argument("--review-file", action="append")
+    failure_apply.add_argument("--review-note", action="append")
+    failure_apply.add_argument("--evaluator-file", action="append")
+    failure_apply.add_argument("--evaluator-note", action="append")
+    failure_apply.set_defaults(func=command_failure_apply)
+
+    github = sub.add_parser("github", help="Helpers GitHub Issues/PR")
+    github_sub = github.add_subparsers(dest="github_command", required=True)
+    github_configure = github_sub.add_parser("configure", help="Configura repo GitHub")
+    github_configure.add_argument("--repo", help="owner/repo")
+    github_configure.add_argument("--remote")
+    github_configure.add_argument("--base")
+    github_configure.set_defaults(func=command_github_configure)
+    github_status = github_sub.add_parser("status", help="Mostra config GitHub")
+    github_status.set_defaults(func=command_github_status)
+    github_body = github_sub.add_parser("pr-body", help="Gera body de PR a partir de task")
+    github_body.add_argument("task_id")
+    github_body.add_argument("--out")
+    github_body.add_argument("--print", action="store_true")
+    github_body.set_defaults(func=command_github_pr_body)
+    github_pr = github_sub.add_parser("pr-create", help="Cria PR via gh CLI ou mostra dry-run")
+    github_pr.add_argument("task_id")
+    github_pr.add_argument("--base")
+    github_pr.add_argument("--head")
+    github_pr.add_argument("--title")
+    github_pr.add_argument("--dry-run", action="store_true")
+    github_pr.set_defaults(func=command_github_pr_create)
+    github_issue = github_sub.add_parser("issue-import", help="Importa issue via gh CLI")
+    github_issue.add_argument("issue")
+    github_issue.set_defaults(func=command_github_issue_import)
+
     report = sub.add_parser("report", help="Gera relatorio da task")
     report.add_argument("task_id")
     report.set_defaults(func=command_report)
@@ -3590,8 +5258,45 @@ def build_parser() -> argparse.ArgumentParser:
     preflight.add_argument("--json", action="store_true", help="Tambem imprime resultado estruturado em JSON")
     preflight.set_defaults(func=command_preflight)
 
+    dashboard = sub.add_parser("dashboard", help="Dashboard local do Harness")
+    dashboard_sub = dashboard.add_subparsers(dest="dashboard_command", required=True)
+    dashboard_html = dashboard_sub.add_parser("html", help="Gera HTML estatico")
+    dashboard_html.set_defaults(func=command_dashboard_html)
+    dashboard_build = dashboard_sub.add_parser("build", help="Alias de html")
+    dashboard_build.set_defaults(func=command_dashboard_html)
+    dashboard_serve = dashboard_sub.add_parser("serve", help="Serve dashboard local")
+    dashboard_serve.add_argument("--host", default="127.0.0.1")
+    dashboard_serve.add_argument("--port", type=int, default=8765)
+    dashboard_serve.add_argument("--once", action="store_true", help="Atende uma requisicao e encerra")
+    dashboard_serve.set_defaults(func=command_dashboard_serve)
+
     status = sub.add_parser("status", help="Mostra estado do Harness")
     status.set_defaults(func=command_status)
+
+    plugin = sub.add_parser("plugin", help="Registry local de plugins")
+    plugin_sub = plugin.add_subparsers(dest="plugin_command", required=True)
+    plugin_add = plugin_sub.add_parser("add", help="Registra plugin")
+    plugin_add.add_argument("name")
+    plugin_add.add_argument("--path")
+    plugin_add.add_argument("--command")
+    plugin_add.add_argument("--event", action="append")
+    plugin_add.add_argument("--description")
+    plugin_add.add_argument("--disabled", action="store_true")
+    plugin_add.set_defaults(func=command_plugin_add)
+    plugin_list = plugin_sub.add_parser("list", help="Lista plugins")
+    plugin_list.set_defaults(func=command_plugin_list)
+    plugin_enable = plugin_sub.add_parser("enable", help="Habilita plugin")
+    plugin_enable.add_argument("name")
+    plugin_enable.set_defaults(func=command_plugin_set_enabled)
+    plugin_disable = plugin_sub.add_parser("disable", help="Desabilita plugin")
+    plugin_disable.add_argument("name")
+    plugin_disable.set_defaults(func=command_plugin_set_enabled)
+    plugin_run = plugin_sub.add_parser("run", help="Executa plugins de um evento")
+    plugin_run.add_argument("event")
+    plugin_run.add_argument("--task-id")
+    plugin_run.add_argument("--dry-run", action="store_true")
+    plugin_run.add_argument("--timeout", type=int, default=300)
+    plugin_run.set_defaults(func=command_plugin_run)
 
     telegram = sub.add_parser("telegram", help="Integra o Harness com Telegram")
     telegram_sub = telegram.add_subparsers(dest="telegram_command", required=True)

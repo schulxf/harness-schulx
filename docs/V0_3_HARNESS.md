@@ -1,0 +1,324 @@
+# Harness v0.3
+
+This document defines the official v0.3-style Harness. It keeps the existing
+local deterministic protocol, then adds a supervisor, queue, dashboard,
+checkpoint/resume model, remote control and integration registry around it.
+
+The goal is not to make the agent more autonomous by hiding evidence. The goal
+is to make long-running AI coding work observable, resumable and governable.
+
+## System Shape
+
+```text
+operator
+  -> dashboard | telegram | cli
+  -> supervisor
+  -> task queue
+  -> contract
+  -> run
+  -> checkpoints
+  -> sensors
+  -> evaluator + reviewer + security scanner
+  -> report + artifact index + project memory
+```
+
+The CLI is still the source of deterministic operations. Dashboard, Telegram
+and plugins are control surfaces around the same repo-local state.
+
+## Local Dashboard
+
+The dashboard is a local view over `.harness/`. It should not require cloud
+state to show current work.
+
+It should show:
+
+- queue status and active task;
+- contract summary and out-of-scope items;
+- active run and last checkpoint;
+- sensor tiers and latest result;
+- evaluator, reviewer and security findings;
+- budget/profile use;
+- artifacts, reports, screenshots, logs and media;
+- Telegram inbox/operator messages;
+- GitHub issue or PR links when configured.
+
+Dashboard actions must still respect the same policy gates as CLI actions.
+
+## Task Queue
+
+The queue stores planned, ready, active, blocked and completed tasks:
+
+```text
+.harness/queue/
+```
+
+Recommended states:
+
+```text
+planned
+ready
+active
+blocked
+needs_work
+passed
+failed
+archived
+```
+
+Rules:
+
+- one active implementation task per repo;
+- ready tasks must have enough context to form a contract;
+- blocked tasks must name the blocker and next required human decision;
+- queue order is advisory unless the supervisor is in automatic mode.
+
+## Supervisor
+
+The supervisor is the control loop. It does not replace the implementer; it
+keeps the run inside policy.
+
+Responsibilities:
+
+- select the next eligible queue item;
+- create or validate contracts before work starts;
+- run preflight before `start`;
+- enforce branch and sensor review policy;
+- write checkpoints after meaningful transitions;
+- stop or pause when budgets are exhausted;
+- launch evaluator, reviewer and security checks;
+- convert non-blocking findings into follow-ups;
+- update dashboard and Telegram status.
+
+The supervisor should never mark success without final evidence.
+
+## Resume And Checkpoints
+
+Every long run should be resumable from repo-local files, not from chat memory.
+
+Checkpoint contents:
+
+- task id and run id;
+- current state;
+- profile and budget use;
+- latest changed-file list;
+- latest sensor result;
+- latest evaluator/reviewer/security status;
+- blockers and decisions;
+- next recommended action.
+
+Checkpoints live under:
+
+```text
+.harness/runs/<TASK>/<RUN>/checkpoints/
+```
+
+Resume loads:
+
+1. task contract;
+2. latest checkpoint;
+3. required project memory;
+4. latest sensor and review evidence;
+5. queued operator messages.
+
+## GitHub Issues And PR Helpers
+
+GitHub helpers are optional. Harness remains local-first when GitHub is absent.
+
+Expected helpers:
+
+- import issue title/body/labels into a Harness task;
+- record upstream issue URL and id;
+- suggest branch names from task ids;
+- generate PR body from contract, files changed, sensors and report;
+- attach evaluator/reviewer/security summaries;
+- create follow-up issues for accepted non-blockers;
+- sync final report back to the issue or PR when configured.
+
+Do not let GitHub labels override the local contract. They are input context,
+not approval evidence.
+
+## Budgets And Profiles
+
+Profiles express how much work a task is allowed to consume before the operator
+must re-evaluate scope.
+
+Recommended profiles:
+
+```text
+fast
+  small fix, one quick sensor tier, minimal reviewer scope
+
+standard
+  normal vertical slice, quick + full sensors, evaluator + reviewer
+
+deep
+  risky or broad change, required docs, full sensors, evaluator, reviewer,
+  security scanner and richer artifact capture
+```
+
+Budget dimensions:
+
+- elapsed time;
+- token budget;
+- command count;
+- external reviewer/evaluator count;
+- network/plugin calls;
+- artifact size.
+
+Budget exhaustion moves the task to `needs_work` unless a stricter failure
+policy says to fail.
+
+## Artifact Viewer
+
+The artifact viewer indexes evidence without forcing it into git.
+
+Typical artifacts:
+
+- builder briefs;
+- evaluator and reviewer handoffs;
+- parallel dispatch;
+- sensor JSON and logs;
+- screenshots and rendered documents;
+- Telegram media;
+- security scan reports;
+- plain summaries and final reports.
+
+The artifact index should store path, kind, task id, run id, created time,
+source command and whether the artifact is safe to share.
+
+## Failure Policy
+
+The policy must be explicit and boring.
+
+Blocking by default:
+
+- stale required context;
+- unreviewed sensors;
+- failed full sensors before pass;
+- evaluator `FAIL`;
+- reviewer P0;
+- reviewer P1 in changed surface;
+- critical security finding;
+- missing final evidence.
+
+Usually non-blocking:
+
+- reviewer P2;
+- cosmetic follow-up outside changed surface;
+- budget warning before hard limit;
+- optional plugin failure when core evidence is complete.
+
+Non-blockers should become follow-up tasks or PR notes. They should not silently
+disappear.
+
+## Project Memory
+
+Project memory is durable evidence and decisions. It is not the full chat log.
+
+Recommended sources:
+
+- `AGENTS.md`, `CONTEXT.md`, ADRs and testing docs;
+- task contracts;
+- final reports;
+- plain summaries;
+- repeated failure notes;
+- accepted security exceptions;
+- release decisions.
+
+Memory entries should include source path, hash, date and reason. When source
+docs change, preflight should force re-ingest before the next run.
+
+## Plugin Registry
+
+The registry describes optional integrations:
+
+```text
+.harness/plugins/registry.json
+```
+
+Each plugin should declare:
+
+- name and version;
+- commands or capabilities;
+- files it may read/write;
+- secrets it requires;
+- network access;
+- whether it can affect pass/fail decisions;
+- owner and update source.
+
+Examples: GitHub, Telegram, security scanner, browser automation, artifact
+renderer, CI bridge, mobile test runner.
+
+## Security Scanner
+
+The scanner runs before final approval in `standard` and `deep` profiles, and
+may be manual in `fast`.
+
+Minimum checks:
+
+- secrets in changed files and reports;
+- `.env`, token, key and credential patterns;
+- unsafe shell execution or bypass flags;
+- writes outside repo boundaries;
+- unexpected network or dependency changes;
+- artifacts that should not be shared;
+- Telegram/plugin permission drift.
+
+Critical findings block. Medium findings should either be fixed or explicitly
+accepted with a note in the report.
+
+## Telegram Remote Control
+
+Telegram is a remote-control surface, not just notifications.
+
+Supported operator intents:
+
+- check status;
+- list and pick queue items;
+- see active task, budget and checkpoint;
+- request latest report or artifact summary;
+- send an operator message into the run;
+- explicitly call Codex with `/codex`;
+- pause, resume or mark blocked when the supervisor supports it.
+
+Default bridge mode should queue normal messages instead of interrupting an
+active Codex turn. `/codex` is the explicit escape hatch for active remote
+commands.
+
+## Versioned State
+
+Recommended to version:
+
+```text
+.harness/config.json
+.harness/progress.md
+.harness/tasks/**
+.harness/contracts/**
+.harness/reports/**
+```
+
+Keep local by default:
+
+```text
+.harness/runs/**
+.harness/context/**
+.harness/inbox/**
+.harness/telegram/**
+.harness/plugins/secrets/**
+large artifacts and logs
+```
+
+## Definition Of Done
+
+A v0.3 task is done when:
+
+1. the contract exists and matches the task;
+2. required context preflight passed;
+3. the latest run has checkpoints and evidence;
+4. final sensors passed;
+5. evaluator accepted;
+6. reviewer has no blocking finding;
+7. security scanner has no blocking finding;
+8. report and plain summary exist;
+9. follow-ups were created for accepted non-blockers;
+10. dashboard/queue state matches the final decision.

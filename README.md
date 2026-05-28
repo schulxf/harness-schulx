@@ -5,9 +5,10 @@
 [![Tests](https://img.shields.io/badge/tests-pytest-0A66C2)](#desenvolvimento)
 
 Harness Schulx is a local, deterministic runner for AI-assisted coding work.
-It turns a loose prompt or issue into a small task with a contract, context
-checks, reviewed sensors, isolated evaluator/reviewer handoffs, Telegram
-monitoring, simple final summaries, and repeatable reports.
+It turns a loose prompt, queue item or GitHub issue into a small task with a
+contract, context checks, reviewed sensors, checkpoints, isolated
+evaluator/reviewer handoffs, Telegram remote control, local dashboard visibility
+and repeatable reports.
 
 It is designed for long-running Codex workflows where you want speed without
 losing evidence.
@@ -15,8 +16,10 @@ losing evidence.
 ```text
 Issue/Prompt
   -> Task
+  -> Queue
   -> Contract
   -> Run
+  -> Checkpoints
   -> Quick sensors
   -> Implementation
   -> Full sensors
@@ -38,11 +41,43 @@ AI coding sessions often fail in the same ways:
 Harness Schulx puts a small protocol around the work:
 
 - each task has a contract;
+- queued tasks are visible before an agent starts work;
 - important project context is ingested and checked by hash;
 - sensors must be reviewed before execution;
+- checkpoints make long runs resumable;
 - evaluator and reviewer receive isolated handoffs;
 - P0/P1 findings stay in the same task through a fast fix loop;
-- Telegram can mirror Codex and receive messages while a task runs.
+- Telegram can mirror Codex, send commands and receive messages while a task
+  runs.
+
+## v0.3 Operating Model
+
+v0.3 is the official Harness shape: local-first, evidence-first, and
+supervisor-driven. The CLI remains usable by hand, but the preferred workflow is
+to operate from a local dashboard or task queue, let a supervisor enforce the
+failure policy, and use Telegram as a remote-control surface when away from the
+terminal.
+
+Core v0.3 surfaces:
+
+- local dashboard for queue, active run, sensors, checkpoints and artifacts;
+- task queue with one active implementation task per repo;
+- supervisor that starts runs, watches budgets, records checkpoints and blocks
+  unsafe transitions;
+- resume/checkpoints for long Codex sessions and interrupted work;
+- GitHub Issues/PR helpers for import, branch naming, PR summary and review
+  handoff evidence;
+- budgets/profiles for fast, standard and deep runs;
+- artifact viewer for reports, logs, screenshots, media and handoffs;
+- failure policy for sensor failure, stale context, budget exhaustion and
+  blocking reviewer findings;
+- project memory from required docs, ADRs, summaries and prior Harness reports;
+- plugin registry for optional integrations and repo-local tools;
+- security scanner for secrets, risky shell use and unsafe generated outputs;
+- Telegram as remote control for status, queue actions, reports and Codex
+  messages.
+
+Read the full v0.3 model in [docs/V0_3_HARNESS.md](docs/V0_3_HARNESS.md).
 
 ## Installation
 
@@ -131,18 +166,20 @@ python $HARNESS --repo $APP_REPO report TASK-001
 ## Daily Flow
 
 1. Create or import one task.
-2. Create the contract before implementation.
-3. Ingest required docs when the repo has project context or ADRs.
-4. Start a run.
-5. Implement only the contracted task.
-6. Run quick sensors during the fix loop.
-7. Run full sensors before approval.
-8. Generate evaluator and reviewer handoffs.
-9. Spawn the evaluator and Greptile-style reviewer in parallel.
-10. Consolidate both answers.
-11. Fix P0/P1 in the same task.
-12. Register `pass`, `fail`, or `needs-work`.
-13. Generate the report.
+2. Put it in the queue with a profile and budget.
+3. Create the contract before implementation.
+4. Ingest required docs when the repo has project context or ADRs.
+5. Start a run through the supervisor.
+6. Implement only the contracted task.
+7. Save checkpoints after meaningful progress.
+8. Run quick sensors during the fix loop.
+9. Run full sensors before approval.
+10. Generate evaluator and reviewer handoffs.
+11. Spawn the evaluator and Greptile-style reviewer in parallel.
+12. Consolidate both answers.
+13. Fix P0/P1 in the same task.
+14. Register `pass`, `fail`, or `needs-work`.
+15. Generate the report and artifact index.
 
 ## Core Concepts
 
@@ -188,6 +225,41 @@ A run is one execution attempt:
 
 It contains briefs, handoffs, sensor evidence, evaluations, fix briefs and
 plain-language summaries.
+
+### Queue
+
+The task queue records work that is ready, blocked, active or complete. The
+queue is intentionally local so a repo can be operated offline:
+
+```text
+.harness/queue/
+```
+
+Only one implementation task should be active per repo. Other queued tasks may
+be planned, contracted or waiting for GitHub sync.
+
+### Supervisor
+
+The supervisor is the policy layer around the runner. It is responsible for:
+
+- starting the next eligible task;
+- refusing stale context or unreviewed sensors;
+- saving checkpoints;
+- enforcing budgets and profiles;
+- applying the failure policy;
+- exposing status to the dashboard and Telegram.
+
+### Checkpoints And Resume
+
+Long runs should write checkpoints whenever the task state changes:
+
+```text
+.harness/runs/<TASK>/<RUN>/checkpoints/
+```
+
+A checkpoint should capture current status, changed files, latest sensor
+evidence, active blockers, budget use and next action. Resume always starts
+from the latest checkpoint plus the task contract.
 
 ### Sensors
 
@@ -281,6 +353,96 @@ It explains:
 
 The final report includes the same section.
 
+### Artifact Viewer
+
+The dashboard artifact viewer indexes files produced by the run:
+
+```text
+builder-brief.md
+evaluator-agent-handoff.md
+greptile-reviewer-agent-handoff.md
+parallel-dispatch.md
+sensors.json
+plain-summary.md
+report.md
+screenshots/
+logs/
+media/
+```
+
+Large artifacts remain local by default. Reports may link to them without
+copying them into git.
+
+### Budgets And Profiles
+
+Profiles define how much evidence and review depth a task needs:
+
+```text
+fast      small fix, quick sensors, tight budget
+standard  normal feature slice, quick + full sensors
+deep      risky change, extra docs, evaluator + reviewer + security scan
+```
+
+Budgets should track at least elapsed time, token budget, command budget and
+external-review budget. Budget exhaustion does not mean success or failure by
+itself; it moves the run to `needs_work` unless the failure policy says
+otherwise.
+
+### Project Memory
+
+Project memory is not chat history. It is the durable repo-local context that
+future agents may trust:
+
+```text
+.harness/memory/
+```
+
+Recommended inputs:
+
+- required context docs and ADRs;
+- task contracts;
+- final reports;
+- plain summaries;
+- repeated failure notes;
+- security and release decisions.
+
+### GitHub Helpers
+
+v0.3 treats GitHub as an external source of truth, not as required runtime
+state. Helpers may:
+
+- import GitHub Issues as Harness tasks;
+- map task ids to branches and PRs;
+- generate PR descriptions from reports and sensor evidence;
+- attach reviewer/evaluator summaries;
+- create follow-up issues for non-blocking P2 findings.
+
+### Plugin Registry
+
+The plugin registry records optional integrations available to a repo:
+
+```text
+.harness/plugins/registry.json
+```
+
+Examples: GitHub, Telegram, security scanners, browser automation, artifact
+renderers, mobile test runners and cloud CI bridges. A plugin must declare what
+commands it can run, what files it writes and whether it can access secrets.
+
+### Security Scanner
+
+The security scanner is a gate before final approval. It should check:
+
+- secrets in changed files and artifacts;
+- unsafe shell commands;
+- generated files outside the repo;
+- token or credential leakage into reports;
+- suspicious dependency or network changes;
+- Telegram and plugin permissions.
+
+Findings follow the same blocking model as review: critical issues block, lower
+severity findings become explicit follow-ups unless policy promotes them.
+
 ## Context Preflight
 
 Harness can ingest project documents and lock their hashes:
@@ -298,8 +460,8 @@ manifest metadata remain the same.
 
 ## Telegram Integration
 
-Harness can send notifications, receive prompts, mirror Codex sessions and act
-as a Telegram-to-Codex bridge.
+Harness can send notifications, receive prompts, mirror Codex sessions, control
+the queue and act as a Telegram-to-Codex bridge.
 
 Create a Telegram bot with BotFather and set the token outside the repo:
 
@@ -367,6 +529,7 @@ docs/
   HARNESS_PROTOCOL.md     Full protocol details
   SPEED_LOOP.md           Fast-loop strategy
   TELEGRAM.md             Telegram setup and modes
+  V0_3_HARNESS.md         v0.3 operating model
 examples/
   issue-login.md          Example issue
 skills/
@@ -381,10 +544,13 @@ Generated state in app repositories:
 ```text
 .harness/
   config.json
+  queue/
   tasks/
   contracts/
   runs/
   reports/
+  memory/
+  plugins/
   telegram/
   inbox/telegram/
 ```
@@ -409,6 +575,11 @@ report               Write the final report
 status               Show project state
 telegram             Telegram integration commands
 ```
+
+v0.3 command families also include dashboard, queue, supervisor, checkpoint,
+resume, github, profile, artifact, memory, plugin and security operations. Some
+installations expose these through plugins while the core CLI remains local and
+deterministic.
 
 ## Development
 
@@ -440,8 +611,8 @@ The project intentionally has no runtime dependencies. Tests use `pytest`.
 Current version:
 
 ```text
-0.2.0
+0.3.0
 ```
 
-Harness Schulx is an MVP, but the core protocol is already usable for real
-local projects.
+Harness Schulx is a local-first Harness. The v0.3 protocol is the official
+target for real local projects and supervised AI coding runs.

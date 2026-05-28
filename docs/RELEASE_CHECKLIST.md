@@ -18,6 +18,10 @@ python bin\harness.py --help
 - `__pycache__/` and `.pytest_cache/` ignored.
 - README updated.
 - Skill copy updated in `skills/harness-runner/SKILL.md`.
+- v0.3 protocol docs updated.
+- Telegram remote-control docs updated.
+- Dashboard, queue, supervisor, resume/checkpoint, GitHub helper, budget,
+  artifact, memory, plugin and security scanner docs checked for consistency.
 - Tests updated for new behavior.
 
 ## GitHub
@@ -25,7 +29,7 @@ python bin\harness.py --help
 ```powershell
 git status
 git add .
-git commit -m "Release v0.2.0"
+git commit -m "Release v0.3.0"
 git push -u origin main
 ```
 
