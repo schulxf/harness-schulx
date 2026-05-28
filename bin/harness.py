@@ -1183,9 +1183,29 @@ def detect_default_sensors(root: Path) -> list[str]:
     return sensors
 
 
-def is_git_repo(root: Path) -> bool:
+def discover_git_dir(root: Path) -> Path | None:
     resolved = root.resolve(strict=False)
-    if not any((path / ".git").exists() for path in [resolved, *resolved.parents]):
+    for path in [resolved, *resolved.parents]:
+        dot_git = path / ".git"
+        if dot_git.is_dir():
+            return dot_git
+        if dot_git.is_file():
+            try:
+                content = read_text(dot_git).strip()
+            except OSError:
+                continue
+            prefix = "gitdir:"
+            if content.lower().startswith(prefix):
+                git_dir = content[len(prefix) :].strip()
+                candidate = Path(git_dir)
+                if not candidate.is_absolute():
+                    candidate = path / candidate
+                return candidate.resolve(strict=False)
+    return None
+
+
+def is_git_repo(root: Path) -> bool:
+    if not discover_git_dir(root):
         return False
     try:
         result = subprocess.run(
@@ -1201,6 +1221,19 @@ def is_git_repo(root: Path) -> bool:
 
 
 def current_git_branch(root: Path) -> str | None:
+    git_dir = discover_git_dir(root)
+    if git_dir:
+        head_path = git_dir / "HEAD"
+        try:
+            head = read_text(head_path).strip()
+        except OSError:
+            head = ""
+        if head.startswith("ref:"):
+            ref = head.removeprefix("ref:").strip()
+            heads_prefix = "refs/heads/"
+            return ref.removeprefix(heads_prefix) or None
+        if head:
+            return head[:12]
     if not is_git_repo(root):
         return None
     branch = git_output(root, ["branch", "--show-current"]).strip()
@@ -3913,6 +3946,58 @@ def hub_repo_phase(tasks: list[dict[str, Any]], queue: list[dict[str, Any]], sec
     return "idle"
 
 
+def hub_agent_role_for_phase(phase: str) -> str:
+    if phase == "review":
+        return "reviewer"
+    if phase == "security":
+        return "security"
+    if phase == "report":
+        return "reporter"
+    if phase == "build":
+        return "builder"
+    return "operator"
+
+
+def hub_agent_name_for_role(role: str) -> str:
+    return {
+        "builder": "Builder",
+        "reviewer": "Reviewer",
+        "security": "Sentinel",
+        "reporter": "Archivist",
+        "operator": "Operator",
+    }.get(role, "Operator")
+
+
+def hub_agent_state_for_phase(phase: str, active_task_id: str) -> str:
+    if active_task_id and phase in {"build", "review", "security", "report"}:
+        return "working"
+    return "idle"
+
+
+def hub_agent_speech(
+    phase: str,
+    task: dict[str, Any] | None,
+    queue: list[dict[str, Any]],
+    security_report: dict[str, Any],
+) -> str:
+    task_id = str((task or {}).get("task_id") or "")
+    title = str((task or {}).get("title") or "").strip()
+    task_label = f"{task_id}: {title}" if task_id and title else task_id or title
+    if phase == "security":
+        count = len(security_report.get("findings") or [])
+        return f"Encontrei {count} alerta(s) de seguranca." if count else "Conferindo seguranca."
+    if phase == "review":
+        return f"Revisando {task_label}." if task_label else "Preparando revisao."
+    if phase == "report":
+        return f"Fechando relatorio de {task_label}." if task_label else "Organizando relatorios."
+    if phase == "build":
+        return f"Trabalhando em {task_label}." if task_label else "Implementando a task ativa."
+    queued = len([item for item in queue if item.get("status") == "queued"])
+    if queued:
+        return f"Livre. {queued} item(ns) na fila."
+    return "Livre. Patrulhando o laboratorio."
+
+
 def collect_hub_repo_state(root: Path, index: int = 0) -> dict[str, Any]:
     if not root.exists() or not root.is_dir():
         return {
@@ -3947,48 +4032,31 @@ def collect_hub_repo_state(root: Path, index: int = 0) -> dict[str, Any]:
         active_task = next((task for task in tasks if task.get("status") in {"in_progress", "needs_work", "sensors_failed"}), None)
         active_task_id = str(active_task.get("task_id") or "") if active_task else ""
     phase = hub_repo_phase(tasks, queue, security_report)
+    if not active_task:
+        phase_statuses = {
+            "review": {"sensors_passed"},
+            "report": {"passed", "done"},
+        }.get(phase, set())
+        active_task = next(
+            (task for task in reversed(tasks) if task.get("status") in phase_statuses),
+            None,
+        )
+        active_task_id = str(active_task.get("task_id") or "") if active_task else ""
     latest_run = latest_run_dir_or_none(root, active_task_id) if active_task_id else None
-    agents = []
-    if active_task_id:
-        agents.append(
-            {
-                "id": f"{index}-builder",
-                "name": "Builder",
-                "role": "builder",
-                "task_id": active_task_id,
-                "phase": phase if phase in {"queue", "build", "sensors"} else "build",
-            }
-        )
-    if phase in {"review", "report"}:
-        agents.append(
-            {
-                "id": f"{index}-reviewer",
-                "name": "Reviewer",
-                "role": "reviewer",
-                "task_id": active_task_id,
-                "phase": "review",
-            }
-        )
-    if security_report.get("findings"):
-        agents.append(
-            {
-                "id": f"{index}-sentinel",
-                "name": "Sentinel",
-                "role": "security",
-                "task_id": active_task_id,
-                "phase": "security",
-            }
-        )
-    if not agents:
-        agents.append(
-            {
-                "id": f"{index}-scout",
-                "name": "Scout",
-                "role": "observer",
-                "task_id": active_task_id,
-                "phase": phase,
-            }
-        )
+    role = hub_agent_role_for_phase(phase)
+    agent_state = hub_agent_state_for_phase(phase, active_task_id)
+    agents = [
+        {
+            "id": f"{index}-{role}",
+            "name": hub_agent_name_for_role(role),
+            "role": role,
+            "state": agent_state,
+            "task_id": active_task_id,
+            "task_title": active_task.get("title") if active_task else "",
+            "phase": phase,
+            "speech": hub_agent_speech(phase, active_task, queue, security_report),
+        }
+    ]
     return {
         "index": index,
         "project": config.get("project_name") or root.name,
@@ -4016,6 +4084,216 @@ def collect_hub_repo_state(root: Path, index: int = 0) -> dict[str, Any]:
     }
 
 
+def wmux_pipe_path() -> str:
+    return os.environ.get("WMUX_PIPE") or (r"\\.\pipe\wmux" if os.name == "nt" else "")
+
+
+def wmux_cli_path() -> str:
+    cli = os.environ.get("WMUX_CLI", "")
+    if cli and Path(cli).exists():
+        return cli
+    found = shutil.which("wmux")
+    if found:
+        return found
+    if os.name == "nt":
+        downloads = Path.home() / "Downloads"
+        try:
+            matches = sorted(
+                downloads.glob("wmux-*-win-x64/resources/cli/wmux.js"),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+        except OSError:
+            matches = []
+        if matches:
+            return str(matches[0])
+    return ""
+
+
+def wmux_pipe_exchange(payload: bytes, max_bytes: int = 1024 * 1024) -> tuple[bool, str]:
+    pipe = wmux_pipe_path()
+    if not pipe:
+        return False, "wmux pipe nao configurado."
+    try:
+        with open(pipe, "r+b", buffering=0) as handle:  # noqa: PTH123 - Windows named pipe.
+            handle.write(payload + b"\n")
+            data = b""
+            while b"\n" not in data and len(data) < max_bytes:
+                chunk = handle.read(4096)
+                if not chunk:
+                    break
+                data += chunk
+    except OSError as exc:
+        return False, str(exc)
+    return True, data.decode("utf-8", errors="replace").strip()
+
+
+def wmux_send_v1(command: str) -> dict[str, Any]:
+    ok, raw = wmux_pipe_exchange(command.encode("utf-8"))
+    return {"ok": ok, "text": raw if ok else "", "error": "" if ok else raw}
+
+
+def wmux_send_v2(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    request = json.dumps({"method": method, "params": params or {}, "id": 1}).encode("utf-8")
+    ok, raw = wmux_pipe_exchange(request)
+    if not ok:
+        return {"ok": False, "error": raw, "result": None}
+    try:
+        response = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"ok": False, "error": raw or "resposta invalida do wmux.", "result": None}
+    if response.get("error"):
+        error = response["error"]
+        if isinstance(error, dict):
+            error = error.get("message") or json.dumps(error, ensure_ascii=False)
+        return {"ok": False, "error": str(error), "result": response}
+    return {"ok": True, "error": "", "result": response.get("result")}
+
+
+def wmux_command_hint() -> str:
+    cli = wmux_cli_path()
+    if not cli:
+        return "wmux"
+    if cli.endswith(".js"):
+        node = shutil.which("node") or "node"
+        return f'{node} "{cli}"'
+    return cli
+
+
+def extract_wmux_surface_id(value: Any) -> str:
+    if isinstance(value, dict):
+        for key in ["surfaceId", "surface_id", "id"]:
+            found = value.get(key)
+            if found and (key != "id" or value.get("type") == "terminal"):
+                return str(found)
+        for key in ["surface", "newSurface", "pane"]:
+            found = extract_wmux_surface_id(value.get(key))
+            if found:
+                return found
+        for key in ["surfaces", "newSurfaces"]:
+            surfaces = value.get(key)
+            if isinstance(surfaces, list):
+                for surface in surfaces:
+                    found = extract_wmux_surface_id(surface)
+                    if found:
+                        return found
+    if isinstance(value, list):
+        for item in value:
+            found = extract_wmux_surface_id(item)
+            if found:
+                return found
+    return ""
+
+
+def ps_single_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def collect_wmux_state() -> dict[str, Any]:
+    state: dict[str, Any] = {
+        "available": False,
+        "pipe": wmux_pipe_path(),
+        "cli": wmux_cli_path(),
+        "command": wmux_command_hint(),
+        "surface_id": os.environ.get("WMUX_SURFACE_ID", ""),
+        "panes": [],
+        "surfaces": [],
+        "agents": [],
+        "tree": {},
+        "error": "",
+    }
+    ping = wmux_send_v1("ping")
+    if not ping.get("ok") or str(ping.get("text") or "").strip() != "pong":
+        state["error"] = str(ping.get("error") or ping.get("text") or "wmux nao respondeu.")
+        return state
+
+    state["available"] = True
+    for key, method in [
+        ("panes", "pane.list"),
+        ("surfaces", "surface.list"),
+        ("agents", "agent.list"),
+        ("tree", "system.tree"),
+    ]:
+        response = wmux_send_v2(method, {})
+        if not response.get("ok"):
+            state.setdefault("warnings", []).append({"method": method, "error": response.get("error")})
+            continue
+        result = response.get("result") or {}
+        if key == "tree":
+            state[key] = result.get("tree", result) if isinstance(result, dict) else result
+        elif isinstance(result, dict):
+            state[key] = result.get(key, result.get(key.rstrip("s"), []))
+        else:
+            state[key] = result
+    return state
+
+
+def wmux_focus(payload: dict[str, Any]) -> dict[str, Any]:
+    surface_id = str(payload.get("surface_id") or payload.get("surfaceId") or "")
+    pane_id = str(payload.get("pane_id") or payload.get("paneId") or "")
+    if surface_id:
+        response = wmux_send_v2("surface.focus", {"id": surface_id})
+    elif pane_id:
+        response = wmux_send_v2("pane.focus", {"id": pane_id})
+    else:
+        return {"ok": False, "error": "Informe surface_id ou pane_id."}
+    return {"ok": bool(response.get("ok")), "error": response.get("error", ""), "result": response.get("result")}
+
+
+def wmux_send_text(payload: dict[str, Any]) -> dict[str, Any]:
+    surface_id = str(payload.get("surface_id") or payload.get("surfaceId") or os.environ.get("WMUX_SURFACE_ID", ""))
+    text = str(payload.get("text") or "")
+    enter = bool(payload.get("enter", True))
+    if not text and not enter:
+        return {"ok": False, "error": "Nada para enviar."}
+
+    results: dict[str, Any] = {}
+    ok = True
+    if text:
+        params: dict[str, Any] = {"text": text}
+        if surface_id:
+            params["surfaceId"] = surface_id
+        response = wmux_send_v2("surface.send_text", params)
+        results["send"] = response
+        ok = ok and bool(response.get("ok"))
+    if enter:
+        params = {"key": "Enter", "modifiers": []}
+        if surface_id:
+            params["surfaceId"] = surface_id
+        response = wmux_send_v2("surface.send_key", params)
+        results["enter"] = response
+        ok = ok and bool(response.get("ok"))
+    return {"ok": ok, "surface_id": surface_id, "result": results}
+
+
+def wmux_new_terminal(payload: dict[str, Any]) -> dict[str, Any]:
+    cwd = str(payload.get("cwd") or payload.get("root") or "")
+    direction = str(payload.get("direction") or "down")
+    if direction not in {"down", "right"}:
+        direction = "down"
+    split = wmux_send_v2("pane.split", {"direction": direction, "type": "terminal"})
+    if not split.get("ok"):
+        return {"ok": False, "error": split.get("error"), "split": split}
+
+    surface_id = extract_wmux_surface_id(split.get("result"))
+    cd_result = None
+    if cwd and surface_id:
+        time.sleep(0.2)
+        cd_result = wmux_send_text(
+            {
+                "surface_id": surface_id,
+                "text": f"Set-Location -LiteralPath {ps_single_quote(cwd)}",
+                "enter": True,
+            }
+        )
+    return {
+        "ok": True,
+        "surface_id": surface_id,
+        "split": split.get("result"),
+        "cd": cd_result,
+    }
+
+
 def collect_dashboard_hub_state(paths: list[Path]) -> dict[str, Any]:
     repos = [collect_hub_repo_state(path, index) for index, path in enumerate(paths)]
     return {
@@ -4025,6 +4303,7 @@ def collect_dashboard_hub_state(paths: list[Path]) -> dict[str, Any]:
         "total_tasks": sum(int(repo.get("counts", {}).get("tasks") or 0) for repo in repos),
         "total_findings": sum(int(repo.get("counts", {}).get("security_findings") or 0) for repo in repos),
         "repos": repos,
+        "wmux": collect_wmux_state(),
     }
 
 
@@ -4280,28 +4559,133 @@ def render_dashboard_hub_html(state: dict[str, Any], refresh_seconds: int = 3) -
       font-size: 10px;
       color: var(--ink);
     }}
-    .agent {{
+    .agent-token {{
       position: absolute;
-      width: 18px;
-      height: 18px;
-      background: var(--phase, var(--blue));
-      border: 3px solid #071018;
-      box-shadow: 0 0 0 2px rgba(255,255,255,.22), 0 0 14px var(--phase, var(--blue));
-      animation: patrol 3.2s steps(6) infinite;
-      z-index: 3;
+      width: 92px;
+      height: 106px;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      padding: 0;
+      cursor: pointer;
+      z-index: 4;
+      font: inherit;
     }}
-    .agent::before {{
+    .agent-token:focus {{
+      outline: 3px solid var(--blue);
+      outline-offset: 4px;
+    }}
+    .agent-token[data-state="idle"] {{
+      animation: idle-walk 5.6s steps(8) infinite;
+    }}
+    .agent-token[data-state="working"] {{
+      animation: working-bob 1.05s steps(3) infinite;
+    }}
+    .speech-bubble {{
+      position: absolute;
+      left: -26px;
+      bottom: 68px;
+      width: 146px;
+      min-height: 42px;
+      padding: 7px 8px;
+      border: 3px solid #070504;
+      background: #f1dfb5;
+      color: #1b120d;
+      box-shadow: 3px 3px 0 #070504;
+      font-size: 10px;
+      line-height: 1.18;
+      text-align: left;
+    }}
+    .speech-bubble::after {{
       content: "";
       position: absolute;
-      left: 4px;
-      top: -8px;
-      width: 8px;
-      height: 5px;
-      background: #f2d7a5;
-      border: 2px solid #071018;
+      left: 42px;
+      bottom: -11px;
+      width: 14px;
+      height: 14px;
+      background: #f1dfb5;
+      border-right: 3px solid #070504;
+      border-bottom: 3px solid #070504;
+      transform: rotate(45deg);
     }}
-    .agent[data-role="reviewer"] {{ animation-duration: 4.2s; }}
-    .agent[data-role="security"] {{ animation-duration: 2.5s; }}
+    .agent-sprite {{
+      position: absolute;
+      left: 28px;
+      bottom: 6px;
+      width: 38px;
+      height: 56px;
+      filter: drop-shadow(0 0 8px var(--phase, var(--blue)));
+    }}
+    .agent-head {{
+      position: absolute;
+      left: 10px;
+      top: 0;
+      width: 18px;
+      height: 17px;
+      background: #f0c99a;
+      border: 3px solid #070504;
+      box-shadow: inset 0 -4px 0 #b77d52;
+    }}
+    .agent-head::before {{
+      content: "";
+      position: absolute;
+      left: 3px;
+      top: 5px;
+      width: 3px;
+      height: 3px;
+      background: #070504;
+      box-shadow: 8px 0 0 #070504;
+    }}
+    .agent-body {{
+      position: absolute;
+      left: 6px;
+      top: 18px;
+      width: 26px;
+      height: 25px;
+      background: var(--phase, var(--blue));
+      border: 3px solid #070504;
+      box-shadow: inset 0 -6px 0 rgba(0,0,0,.28);
+    }}
+    .agent-body::before,
+    .agent-body::after {{
+      content: "";
+      position: absolute;
+      top: 5px;
+      width: 8px;
+      height: 16px;
+      background: #2d1c13;
+      border: 3px solid #070504;
+    }}
+    .agent-body::before {{ left: -12px; }}
+    .agent-body::after {{ right: -12px; }}
+    .agent-legs {{
+      position: absolute;
+      left: 9px;
+      top: 42px;
+      width: 8px;
+      height: 13px;
+      background: #1b2431;
+      border: 3px solid #070504;
+      box-shadow: 12px 0 0 #1b2431, 12px 0 0 3px #070504;
+    }}
+    .agent-token[data-state="idle"] .agent-legs {{
+      animation: leg-walk .7s steps(2) infinite;
+    }}
+    .agent-token[data-state="working"] .agent-body::before {{
+      animation: arm-type .5s steps(2) infinite;
+    }}
+    .agent-shadow {{
+      position: absolute;
+      left: 25px;
+      bottom: 0;
+      width: 44px;
+      height: 10px;
+      background: rgba(0,0,0,.35);
+    }}
+    .agent-token[data-role="security"] .agent-body {{ background: var(--red); }}
+    .agent-token[data-role="reviewer"] .agent-body {{ background: var(--violet); }}
+    .agent-token[data-role="reporter"] .agent-body {{ background: var(--green); }}
+    .agent-token[data-role="operator"] .agent-body {{ background: var(--amber); }}
     .path {{
       position: absolute;
       height: 6px;
@@ -4367,9 +4751,78 @@ def render_dashboard_hub_html(state: dict[str, Any], refresh_seconds: int = 3) -
       color: var(--ink);
       font-size: 12px;
     }}
+    .terminal-panel {{
+      border-top: 3px solid var(--stone-4);
+      margin-top: 12px;
+      padding-top: 10px;
+    }}
+    .terminal-actions {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      margin: 8px 0;
+    }}
+    .terminal-button {{
+      border: 3px solid #070504;
+      background: #24313b;
+      color: var(--ink);
+      min-height: 34px;
+      padding: 6px 8px;
+      cursor: pointer;
+      font: inherit;
+      font-size: 11px;
+      box-shadow: 2px 2px 0 #050403;
+    }}
+    .terminal-button:disabled {{
+      opacity: .45;
+      cursor: not-allowed;
+    }}
+    .terminal-input {{
+      width: 100%;
+      min-height: 36px;
+      border: 3px solid #070504;
+      background: #090706;
+      color: var(--ink);
+      padding: 7px;
+      font: inherit;
+      font-size: 12px;
+      box-sizing: border-box;
+    }}
+    .terminal-row {{
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 7px;
+      align-items: center;
+      border-left: 4px solid var(--blue);
+      padding: 6px 0 6px 8px;
+      margin-top: 6px;
+      font-size: 11px;
+    }}
+    .status-ok {{ color: var(--green); }}
+    .status-off {{ color: var(--red); }}
     @keyframes pulse {{
       0%, 100% {{ opacity: .7; transform: scale(1); }}
       50% {{ opacity: 1; transform: scale(1.14); }}
+    }}
+    @keyframes idle-walk {{
+      0% {{ transform: translate(0, 0); }}
+      20% {{ transform: translate(28px, 0); }}
+      40% {{ transform: translate(28px, 28px); }}
+      60% {{ transform: translate(-6px, 28px); }}
+      80% {{ transform: translate(-6px, 0); }}
+      100% {{ transform: translate(0, 0); }}
+    }}
+    @keyframes working-bob {{
+      0%, 100% {{ transform: translateY(0); }}
+      50% {{ transform: translateY(-4px); }}
+    }}
+    @keyframes leg-walk {{
+      0% {{ transform: translateX(0); }}
+      100% {{ transform: translateX(4px); }}
+    }}
+    @keyframes arm-type {{
+      0% {{ transform: translateY(0); }}
+      100% {{ transform: translateY(4px); }}
     }}
     @keyframes patrol {{
       0% {{ transform: translate(0, 0); }}
@@ -4421,6 +4874,7 @@ def render_dashboard_hub_html(state: dict[str, Any], refresh_seconds: int = 3) -
     const refreshMs = {max(refresh_seconds, 1) * 1000};
     let hubState = initialState;
     let selectedIndex = 0;
+    let selectedAgentId = "";
     const roomSlots = [
       [32, 36], [708, 36], [32, 418], [708, 418],
       [370, 36], [370, 418], [32, 226], [708, 226]
@@ -4439,6 +4893,42 @@ def render_dashboard_hub_html(state: dict[str, Any], refresh_seconds: int = 3) -
       const col = index % 3;
       const row = Math.floor(index / 3);
       return [32 + col * 338, 650 + row * 240];
+    }}
+    function agentPosition(agent, agentIndex) {{
+      const phase = agent.phase || "idle";
+      if (agent.state === "idle") return [112 + agentIndex * 28, 72 + (agentIndex % 2) * 16];
+      if (phase === "review" || phase === "security") return [172, 92];
+      if (phase === "report" || phase === "queue") return [74, 92];
+      return [168, 92];
+    }}
+    function renderAgent(agent, agentIndex, repoIndex) {{
+      const [left, top] = agentPosition(agent, agentIndex);
+      const button = document.createElement("button");
+      button.className = "agent-token";
+      button.dataset.role = agent.role || "operator";
+      button.dataset.state = agent.state || "idle";
+      button.dataset.agentId = agent.id || "";
+      button.style.left = left + "px";
+      button.style.top = top + "px";
+      button.style.animationDelay = (agentIndex * -0.45) + "s";
+      button.title = (agent.name || "Agent") + (agent.task_id ? " - " + agent.task_id : "");
+      button.setAttribute("aria-label", button.title);
+      button.innerHTML = `
+        <div class="speech-bubble">${{esc(agent.speech || "Aguardando instrucao.")}}</div>
+        <div class="agent-shadow"></div>
+        <div class="agent-sprite" aria-hidden="true">
+          <div class="agent-head"></div>
+          <div class="agent-body"></div>
+          <div class="agent-legs"></div>
+        </div>
+      `;
+      button.addEventListener("click", event => {{
+        event.stopPropagation();
+        selectedIndex = repoIndex;
+        selectedAgentId = agent.id || "";
+        renderDetail();
+      }});
+      return button;
     }}
     function render() {{
       document.getElementById("generated").textContent = "Atualizado " + (hubState.generated_at || "-");
@@ -4463,7 +4953,7 @@ def render_dashboard_hub_html(state: dict[str, Any], refresh_seconds: int = 3) -
         room.setAttribute("aria-label", "Abrir " + (repo.project || repo.root));
         room.innerHTML = `
           <div class="room-title">${{esc(repo.project || "Projeto")}}</div>
-          <div class="room-meta">${{esc(phaseLabels[repo.phase] || repo.phase)}} · ${{esc(repo.branch || "sem branch")}}</div>
+          <div class="room-meta">${{esc(phaseLabels[repo.phase] || repo.phase)}} - ${{esc(repo.branch || "sem branch")}}</div>
           <div class="metric-line">
             <div class="mini">T ${{esc(repo.counts?.tasks ?? 0)}}</div>
             <div class="mini">Q ${{esc(repo.counts?.queued ?? 0)}}</div>
@@ -4473,21 +4963,15 @@ def render_dashboard_hub_html(state: dict[str, Any], refresh_seconds: int = 3) -
           <div class="console"></div>
           <div class="station"></div>
         `;
-        (repo.agents || []).slice(0, 4).forEach((agent, agentIndex) => {{
-          const sprite = document.createElement("div");
-          sprite.className = "agent";
-          sprite.dataset.role = agent.role || "observer";
-          sprite.title = (agent.name || "Agent") + " · " + (agent.task_id || "");
-          sprite.style.left = 148 + agentIndex * 22 + "px";
-          sprite.style.top = 86 + (agentIndex % 2) * 28 + "px";
-          sprite.style.animationDelay = (agentIndex * -0.55) + "s";
-          room.appendChild(sprite);
+        (repo.agents || []).slice(0, 3).forEach((agent, agentIndex) => {{
+          room.appendChild(renderAgent(agent, agentIndex, index));
         }});
-        room.addEventListener("click", () => {{ selectedIndex = index; renderDetail(); }});
+        room.addEventListener("click", () => {{ selectedIndex = index; selectedAgentId = ""; renderDetail(); }});
         room.addEventListener("keydown", event => {{
           if (event.key === "Enter" || event.key === " ") {{
             event.preventDefault();
             selectedIndex = index;
+            selectedAgentId = "";
             renderDetail();
           }}
         }});
@@ -4502,10 +4986,80 @@ def render_dashboard_hub_html(state: dict[str, Any], refresh_seconds: int = 3) -
       (hubState.repos || []).forEach((repo, index) => {{
         const button = document.createElement("button");
         button.className = "repo-button";
-        button.innerHTML = `<strong>${{esc(repo.project || repo.root)}}</strong><br><span class="detail">${{esc(phaseLabels[repo.phase] || repo.phase)}} · ${{esc(repo.root)}}</span>`;
-        button.addEventListener("click", () => {{ selectedIndex = index; renderDetail(); }});
+        button.innerHTML = `<strong>${{esc(repo.project || repo.root)}}</strong><br><span class="detail">${{esc(phaseLabels[repo.phase] || repo.phase)}} - ${{esc(repo.root)}}</span>`;
+        button.addEventListener("click", () => {{ selectedIndex = index; selectedAgentId = ""; renderDetail(); }});
         list.appendChild(button);
       }});
+    }}
+    function activeSurfaceId(wmux) {{
+      const surfaces = wmux.surfaces || [];
+      const active = surfaces.find(surface => surface.isActive) || surfaces[0] || {{}};
+      return active.id || wmux.surface_id || "";
+    }}
+    function wmuxTerminalRows(wmux) {{
+      const surfaces = wmux.surfaces || [];
+      if (!surfaces.length) return `<div class="detail">Nenhum terminal wmux listado.</div>`;
+      return surfaces.map(surface => `
+        <div class="terminal-row">
+          <span>${{esc(surface.id || "-")}}<br><span class="detail">${{esc(surface.type || "terminal")}} / ${{esc(surface.paneId || surface.pane_id || "-")}}</span></span>
+          <button class="terminal-button" data-wmux-focus-surface="${{esc(surface.id || "")}}">Focar</button>
+        </div>
+      `).join("");
+    }}
+    function wmuxAgentRows(wmux) {{
+      const agents = wmux.agents || [];
+      if (!agents.length) return `<div class="detail">Nenhum agent wmux listado.</div>`;
+      return agents.map(agent => {{
+        const surfaceId = agent.surfaceId || agent.surface_id || "";
+        return `
+          <div class="terminal-row">
+            <span>${{esc(agent.label || agent.agentId || agent.id || "agent")}}<br><span class="detail">${{esc(agent.status || "-")}} / ${{esc(surfaceId || "sem surface")}}</span></span>
+            <button class="terminal-button" data-wmux-focus-surface="${{esc(surfaceId)}}" ${{surfaceId ? "" : "disabled"}}>Focar</button>
+          </div>
+        `;
+      }}).join("");
+    }}
+    async function postJson(path, payload) {{
+      const response = await fetch(path, {{
+        method: "POST",
+        headers: {{ "Content-Type": "application/json" }},
+        body: JSON.stringify(payload || {{}})
+      }});
+      const data = await response.json().catch(() => ({{ ok: false, error: "Resposta invalida." }}));
+      if (!response.ok || data.ok === false) throw new Error(data.error || "Falha ao chamar wmux.");
+      return data;
+    }}
+    async function runWmuxAction(path, payload) {{
+      try {{
+        await postJson(path, payload);
+        await refresh();
+      }} catch (error) {{
+        alert(error.message || String(error));
+      }}
+    }}
+    function bindWmuxControls(repo, selectedSurfaceId) {{
+      const detail = document.getElementById("detail");
+      detail.querySelectorAll("[data-wmux-focus-surface]").forEach(button => {{
+        button.addEventListener("click", () => {{
+          runWmuxAction("/wmux/focus", {{ surface_id: button.dataset.wmuxFocusSurface }});
+        }});
+      }});
+      const newTerminal = detail.querySelector("[data-wmux-new-terminal]");
+      if (newTerminal) {{
+        newTerminal.addEventListener("click", () => {{
+          runWmuxAction("/wmux/new-terminal", {{ cwd: repo.root, direction: "down" }});
+        }});
+      }}
+      const sendButton = detail.querySelector("[data-wmux-send]");
+      const input = detail.querySelector("#wmuxSendText");
+      if (sendButton && input) {{
+        sendButton.addEventListener("click", () => {{
+          const text = input.value.trim();
+          if (!text) return;
+          runWmuxAction("/wmux/send", {{ surface_id: selectedSurfaceId, text, enter: true }});
+          input.value = "";
+        }});
+      }}
     }}
     function renderDetail() {{
       const repo = (hubState.repos || [])[selectedIndex];
@@ -4517,21 +5071,50 @@ def render_dashboard_hub_html(state: dict[str, Any], refresh_seconds: int = 3) -
       const activeTask = repo.active_task || {{}};
       const queue = repo.queue || [];
       const tasks = repo.tasks || [];
+      const agents = repo.agents || [];
+      const selectedAgent = agents.find(agent => agent.id === selectedAgentId) || agents[0] || {{}};
+      const wmux = hubState.wmux || {{}};
+      const selectedSurfaceId = activeSurfaceId(wmux);
       detail.innerHTML = `
         <strong>${{esc(repo.project)}}</strong><br>
         Fase: ${{esc(phaseLabels[repo.phase] || repo.phase)}}<br>
         Raiz: ${{esc(repo.root)}}<br>
         Branch: ${{esc(repo.branch || "-")}}<br>
         Profile: ${{esc(repo.active_profile || "-")}}<br>
+        <br><strong>Agente</strong><br>
+        Nome: ${{esc(selectedAgent.name || "-")}}<br>
+        Estado: ${{esc(selectedAgent.state || "-")}}<br>
+        Fala: ${{esc(selectedAgent.speech || "-")}}<br>
+        Task do agente: ${{esc(selectedAgent.task_id || "-")}} ${{esc(selectedAgent.task_title || "")}}<br>
+        <br><strong>Task ativa</strong><br>
         Task ativa: ${{esc(activeTask.task_id || "-")}} ${{esc(activeTask.title || "")}}<br>
         Run: ${{esc(repo.latest_run || "-")}}<br>
         Checkpoint: ${{esc(repo.latest_checkpoint || "-")}}<br>
         Security findings: ${{esc(repo.counts?.security_findings ?? 0)}}<br>
+        <div class="terminal-panel">
+          <strong>Terminal wmux</strong><br>
+          Status: <span class="${{wmux.available ? "status-ok" : "status-off"}}">${{wmux.available ? "conectado" : "desconectado"}}</span><br>
+          Comando: ${{esc(wmux.command || "wmux")}}<br>
+          ${{wmux.available ? `
+            <div class="terminal-actions">
+              <button class="terminal-button" data-wmux-new-terminal>Abrir terminal deste repo</button>
+            </div>
+            <input class="terminal-input" id="wmuxSendText" placeholder="Mensagem ou comando para o terminal ativo">
+            <div class="terminal-actions">
+              <button class="terminal-button" data-wmux-send data-surface-id="${{esc(selectedSurfaceId)}}">Enviar para terminal ativo</button>
+            </div>
+            <strong>Terminais</strong>
+            ${{wmuxTerminalRows(wmux)}}
+            <br><strong>Agents wmux</strong>
+            ${{wmuxAgentRows(wmux)}}
+          ` : `<span class="detail">${{esc(wmux.error || "wmux nao respondeu.")}}</span>`}}
+        </div>
         <br><strong>Fila</strong>
         <ul class="task-list">${{queue.slice(-5).map(item => `<li>${{esc(item.id)}} [${{esc(item.status)}}] ${{esc(item.title)}}</li>`).join("") || "<li>Fila vazia.</li>"}}</ul>
         <br><strong>Tasks recentes</strong>
         <ul class="task-list">${{tasks.slice(-5).map(task => `<li>${{esc(task.task_id)}} [${{esc(task.status)}}] ${{esc(task.title)}}</li>`).join("") || "<li>Nenhuma task.</li>"}}</ul>
       `;
+      bindWmuxControls(repo, selectedSurfaceId);
     }}
     async function refresh() {{
       try {{
@@ -4672,20 +5255,56 @@ def command_dashboard_hub_serve(args: argparse.Namespace) -> None:
     directory = dashboard_hub_root(root)
 
     class HubHandler(http.server.SimpleHTTPRequestHandler):
+        def send_json(self, status: int, payload: dict[str, Any]) -> None:
+            body = json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def read_json_body(self) -> dict[str, Any]:
+            length = int(self.headers.get("Content-Length") or 0)
+            if length <= 0:
+                return {}
+            raw = self.rfile.read(length)
+            if not raw:
+                return {}
+            return json.loads(raw.decode("utf-8"))
+
         def do_GET(self) -> None:  # noqa: N802 - stdlib hook
             request_path = urllib.parse.urlparse(self.path).path
             if request_path in {"/hub-state.json", "/state.json"}:
                 state = collect_dashboard_hub_state(paths)
-                body = json.dumps(state, indent=2, ensure_ascii=False).encode("utf-8")
                 write_json(directory / "hub-state.json", state)
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Cache-Control", "no-store")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                self.send_json(200, state)
+                return
+            if request_path == "/wmux-state.json":
+                self.send_json(200, collect_wmux_state())
                 return
             super().do_GET()
+
+        def do_POST(self) -> None:  # noqa: N802 - stdlib hook
+            request_path = urllib.parse.urlparse(self.path).path
+            if not request_path.startswith("/wmux/"):
+                self.send_error(404)
+                return
+            try:
+                payload = self.read_json_body()
+            except json.JSONDecodeError as exc:
+                self.send_json(400, {"ok": False, "error": f"JSON invalido: {exc}"})
+                return
+
+            if request_path == "/wmux/focus":
+                result = wmux_focus(payload)
+            elif request_path == "/wmux/send":
+                result = wmux_send_text(payload)
+            elif request_path == "/wmux/new-terminal":
+                result = wmux_new_terminal(payload)
+            else:
+                result = {"ok": False, "error": "Acao wmux desconhecida."}
+            self.send_json(200 if result.get("ok") else 400, result)
 
         def log_message(self, format: str, *values: Any) -> None:  # noqa: A002
             if args.quiet:
