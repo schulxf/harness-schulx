@@ -377,8 +377,10 @@ copying them into git.
 ### Pixel-Art Multi-Repo Hub
 
 The hub is a local top-down operations map. Each watched repo becomes a room,
-and active work appears as small agent sprites moving around consoles, stations
-and the central hub core.
+and active work appears as a pixel agent character with a speech bubble. Click
+the agent to inspect the current task, state, run, checkpoint, queue and recent
+task history. A working agent bobs in place near the workstation; an idle agent
+walks around the room.
 
 Generate a static hub:
 
@@ -406,6 +408,16 @@ http://127.0.0.1:8899/
 `hub-serve` recalculates `hub-state.json` from each repo's `.harness/` whenever
 the browser polls it, so the map updates as tasks move through queue, build,
 review, security and report states.
+
+If wmux is running, `hub-serve` also exposes a local wmux bridge:
+
+- list visible wmux panes, terminal surfaces and wmux agents;
+- focus an existing wmux terminal from the hub;
+- open a new wmux terminal for the selected repo;
+- send a short command or message to the active terminal.
+
+The bridge uses the local wmux named pipe (`WMUX_PIPE`) and never stores tokens
+or credentials in the dashboard state.
 
 ### Budgets And Profiles
 

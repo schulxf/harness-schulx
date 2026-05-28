@@ -51,9 +51,13 @@ normal dashboard, but renders it as a top-down operations map:
 
 - each watched repo is a room;
 - queue/build/review/security/report are visible as room phases;
-- agents are small sprites moving inside the rooms;
+- agents are pixel characters with speech bubbles, idle walking and working
+  animation;
 - the central core summarizes all monitored repos;
-- clicking a room opens task, queue, checkpoint, run and security details.
+- clicking a room opens task, queue, checkpoint, run and security details;
+- clicking an agent opens the task/state summary for that agent;
+- when wmux is running, `hub-serve` can list/focus wmux terminals, open a
+  terminal for the selected repo and send text to the active terminal.
 
 Commands:
 
@@ -71,6 +75,10 @@ python <harness.py> --repo C:\control-repo dashboard hub-serve `
 The control repo is where the hub HTML is written. Watched repos are read-only
 inputs. `hub-serve` refreshes `hub-state.json` on demand, so the browser can
 poll without a database, websocket server or external service.
+
+The wmux bridge is local-only. It reads `WMUX_PIPE`/`WMUX_SURFACE_ID` from the
+environment and talks to the wmux named pipe directly, avoiding the slower CLI
+timeout path for live polling.
 
 ## Task Queue
 
