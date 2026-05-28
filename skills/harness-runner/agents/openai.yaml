@@ -1,0 +1,3 @@
+display_name: Harness Runner
+short_description: Execute issues com contratos, contexto obrigatorio, sensores, avaliador spawnado e reviewer Greptile-style.
+default_prompt: Use Harness Runner para executar a proxima issue com preflight de contexto obrigatorio, contrato, TDD, evidencia de sensores, handoff para avaliador spawnado sem contexto da sessao, handoff para reviewer Greptile-style e relatorio final.
