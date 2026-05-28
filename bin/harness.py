@@ -382,6 +382,10 @@ def dashboard_root(root: Path) -> Path:
     return harness_root(root) / "dashboard"
 
 
+def dashboard_hub_root(root: Path) -> Path:
+    return dashboard_root(root) / "hub"
+
+
 def memory_index_path(root: Path) -> Path:
     return harness_root(root) / "memory" / "index.json"
 
@@ -3857,6 +3861,704 @@ def collect_dashboard_state(root: Path) -> dict[str, Any]:
     }
 
 
+def hub_repo_paths(args: argparse.Namespace) -> list[Path]:
+    raw_paths = list(getattr(args, "watch_repo", None) or [])
+    if not raw_paths:
+        raw_paths = [args.repo]
+    paths: list[Path] = []
+    seen: set[str] = set()
+    for raw in raw_paths:
+        path = Path(raw).expanduser().resolve()
+        key = normalize_path_key(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        paths.append(path)
+    return paths
+
+
+def latest_checkpoint_summary(root: Path, task_id: str | None) -> str:
+    if not task_id:
+        return ""
+    path = latest_checkpoint_path(root, task_id)
+    if not path:
+        return ""
+    checkpoint = read_json(path, {})
+    return str(checkpoint.get("summary") or checkpoint.get("reason") or checkpoint.get("created_at") or "")
+
+
+def hub_repo_phase(tasks: list[dict[str, Any]], queue: list[dict[str, Any]], security: dict[str, Any]) -> str:
+    if security.get("findings"):
+        return "security"
+    active = next((item for item in queue if item.get("status") == "active"), None)
+    active_task = None
+    if active and active.get("task_id"):
+        active_task = next((task for task in tasks if task.get("task_id") == active.get("task_id")), None)
+    if active_task:
+        status = str(active_task.get("status") or "")
+        if status in {"in_progress", "needs_work", "sensors_failed"}:
+            return "build"
+        if status == "sensors_passed":
+            return "review"
+        if status in {"passed", "done"}:
+            return "report"
+    if any(task.get("status") in {"in_progress", "needs_work"} for task in tasks):
+        return "build"
+    if any(task.get("status") == "sensors_passed" for task in tasks):
+        return "review"
+    if any(item.get("status") == "queued" for item in queue):
+        return "queue"
+    if any(task.get("status") in {"passed", "done"} for task in tasks):
+        return "report"
+    return "idle"
+
+
+def collect_hub_repo_state(root: Path, index: int = 0) -> dict[str, Any]:
+    if not root.exists() or not root.is_dir():
+        return {
+            "index": index,
+            "project": root.name,
+            "root": str(root),
+            "error": "repo_missing",
+            "phase": "offline",
+            "tasks": [],
+            "queue": [],
+            "agents": [],
+        }
+    if not config_path(root).exists():
+        return {
+            "index": index,
+            "project": root.name,
+            "root": str(root),
+            "error": "harness_not_initialized",
+            "phase": "offline",
+            "tasks": [],
+            "queue": [],
+            "agents": [],
+        }
+    config = load_config(root)
+    tasks = load_tasks(root)
+    queue = sorted_queue_items(load_queue(root))
+    security_report = read_json(security_root(root) / "scan-latest.json", {})
+    active = next((item for item in queue if item.get("status") == "active"), None)
+    active_task_id = str(active.get("task_id") or "") if active else ""
+    active_task = next((task for task in tasks if task.get("task_id") == active_task_id), None)
+    if not active_task:
+        active_task = next((task for task in tasks if task.get("status") in {"in_progress", "needs_work", "sensors_failed"}), None)
+        active_task_id = str(active_task.get("task_id") or "") if active_task else ""
+    phase = hub_repo_phase(tasks, queue, security_report)
+    latest_run = latest_run_dir_or_none(root, active_task_id) if active_task_id else None
+    agents = []
+    if active_task_id:
+        agents.append(
+            {
+                "id": f"{index}-builder",
+                "name": "Builder",
+                "role": "builder",
+                "task_id": active_task_id,
+                "phase": phase if phase in {"queue", "build", "sensors"} else "build",
+            }
+        )
+    if phase in {"review", "report"}:
+        agents.append(
+            {
+                "id": f"{index}-reviewer",
+                "name": "Reviewer",
+                "role": "reviewer",
+                "task_id": active_task_id,
+                "phase": "review",
+            }
+        )
+    if security_report.get("findings"):
+        agents.append(
+            {
+                "id": f"{index}-sentinel",
+                "name": "Sentinel",
+                "role": "security",
+                "task_id": active_task_id,
+                "phase": "security",
+            }
+        )
+    if not agents:
+        agents.append(
+            {
+                "id": f"{index}-scout",
+                "name": "Scout",
+                "role": "observer",
+                "task_id": active_task_id,
+                "phase": phase,
+            }
+        )
+    return {
+        "index": index,
+        "project": config.get("project_name") or root.name,
+        "root": str(root),
+        "branch": current_git_branch(root),
+        "phase": phase,
+        "active_profile": config.get("active_profile", "balanced"),
+        "active_task": active_task,
+        "active_queue": active,
+        "latest_run": str(latest_run) if latest_run else "",
+        "latest_checkpoint": latest_checkpoint_summary(root, active_task_id),
+        "counts": {
+            "tasks": len(tasks),
+            "queued": len([item for item in queue if item.get("status") == "queued"]),
+            "active": len([item for item in queue if item.get("status") == "active"]),
+            "done": len([item for item in queue if item.get("status") == "done"]),
+            "security_findings": len(security_report.get("findings") or []),
+            "artifacts": len(collect_run_artifacts(root)),
+            "unevaluated_runs": len(find_unevaluated_runs(root)),
+        },
+        "tasks": tasks[-10:],
+        "queue": queue[-10:],
+        "security": security_report,
+        "agents": agents,
+    }
+
+
+def collect_dashboard_hub_state(paths: list[Path]) -> dict[str, Any]:
+    repos = [collect_hub_repo_state(path, index) for index, path in enumerate(paths)]
+    return {
+        "generated_at": utc_now(),
+        "repo_count": len(repos),
+        "active_repos": len([repo for repo in repos if repo.get("phase") not in {"idle", "offline"}]),
+        "total_tasks": sum(int(repo.get("counts", {}).get("tasks") or 0) for repo in repos),
+        "total_findings": sum(int(repo.get("counts", {}).get("security_findings") or 0) for repo in repos),
+        "repos": repos,
+    }
+
+
+def render_dashboard_hub_html(state: dict[str, Any], refresh_seconds: int = 3) -> str:
+    initial_state = json.dumps(state, ensure_ascii=False).replace("</", "<\\/")
+    return f"""<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Harness Hub</title>
+  <style>
+    :root {{
+      color-scheme: dark;
+      --stone-0: #0b0908;
+      --stone-1: #15100d;
+      --stone-2: #241a14;
+      --stone-3: #3b2a1e;
+      --stone-4: #68462e;
+      --wood-1: #3a2113;
+      --wood-2: #6f4328;
+      --brass: #c28b43;
+      --blue: #21a7ff;
+      --green: #4ade80;
+      --red: #ff5b5b;
+      --amber: #f6b74a;
+      --violet: #a987ff;
+      --ink: #f3ead7;
+      --muted: #b59f7b;
+      font-family: "Trebuchet MS", Arial, sans-serif;
+      image-rendering: pixelated;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      background:
+        linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px),
+        linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px),
+        var(--stone-0);
+      background-size: 16px 16px;
+      color: var(--ink);
+      letter-spacing: 0;
+      overflow-x: hidden;
+    }}
+    header {{
+      min-height: 72px;
+      padding: 14px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      border-bottom: 4px solid #070504;
+      background: var(--stone-2);
+      box-shadow: inset 0 -4px 0 var(--stone-4);
+    }}
+    h1 {{
+      margin: 0;
+      font-size: 24px;
+      line-height: 1.1;
+      text-transform: uppercase;
+    }}
+    .subhead {{
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 13px;
+    }}
+    .hud {{
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }}
+    .chip {{
+      border: 2px solid var(--stone-4);
+      background: #120d0a;
+      color: var(--ink);
+      min-height: 34px;
+      padding: 7px 10px;
+      box-shadow: inset -2px -2px 0 #050403, inset 2px 2px 0 #3b2a1e;
+      font-size: 12px;
+    }}
+    .shell {{
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 360px;
+      min-height: calc(100vh - 72px);
+    }}
+    .world-wrap {{
+      padding: 18px;
+      overflow: auto;
+      background:
+        radial-gradient(circle at 50% 50%, rgba(33,167,255,.08), transparent 34%),
+        #050403;
+    }}
+    .world {{
+      position: relative;
+      min-width: 1040px;
+      min-height: 680px;
+      border: 8px solid #070504;
+      background:
+        linear-gradient(90deg, rgba(0,0,0,.18) 1px, transparent 1px),
+        linear-gradient(rgba(0,0,0,.18) 1px, transparent 1px),
+        var(--wood-1);
+      background-size: 24px 24px;
+      box-shadow: inset 0 0 0 5px var(--stone-4), 0 0 0 4px #000;
+    }}
+    .hall {{
+      position: absolute;
+      left: 31%;
+      top: 14%;
+      width: 38%;
+      height: 72%;
+      border: 6px solid var(--stone-4);
+      background:
+        linear-gradient(90deg, rgba(246,183,74,.14) 2px, transparent 2px),
+        linear-gradient(rgba(246,183,74,.08) 2px, transparent 2px),
+        #2b1a10;
+      background-size: 34px 34px;
+      box-shadow: inset 0 0 0 4px #120d0a;
+    }}
+    .core {{
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 112px;
+      height: 112px;
+      transform: translate(-50%, -50%);
+      border: 5px solid var(--brass);
+      background: #09131b;
+      box-shadow: inset 0 0 0 8px #12304a, 0 0 24px rgba(33,167,255,.45);
+    }}
+    .core::before {{
+      content: "";
+      position: absolute;
+      left: 29px;
+      top: 29px;
+      width: 44px;
+      height: 44px;
+      border: 4px solid var(--blue);
+      background: #064c7a;
+      animation: pulse 1.8s steps(4) infinite;
+    }}
+    .room {{
+      position: absolute;
+      width: 300px;
+      height: 210px;
+      border: 7px solid #1b100a;
+      background:
+        linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px),
+        linear-gradient(rgba(255,255,255,.03) 1px, transparent 1px),
+        var(--stone-2);
+      background-size: 18px 18px;
+      box-shadow:
+        inset 0 0 0 4px var(--stone-4),
+        inset 0 -10px 0 rgba(0,0,0,.22),
+        0 0 0 4px #070504;
+      cursor: pointer;
+    }}
+    .room[data-phase="build"] {{ --phase: var(--blue); }}
+    .room[data-phase="queue"] {{ --phase: var(--amber); }}
+    .room[data-phase="review"] {{ --phase: var(--violet); }}
+    .room[data-phase="security"] {{ --phase: var(--red); }}
+    .room[data-phase="report"] {{ --phase: var(--green); }}
+    .room[data-phase="idle"] {{ --phase: var(--muted); }}
+    .room[data-phase="offline"] {{ --phase: #666; }}
+    .room::before {{
+      content: "";
+      position: absolute;
+      inset: 10px;
+      border: 3px solid var(--phase, var(--muted));
+      opacity: .75;
+      pointer-events: none;
+    }}
+    .room-title {{
+      position: absolute;
+      left: 17px;
+      top: 14px;
+      right: 17px;
+      font-size: 14px;
+      font-weight: 700;
+      text-transform: uppercase;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }}
+    .room-meta {{
+      position: absolute;
+      left: 18px;
+      top: 36px;
+      color: var(--muted);
+      font-size: 11px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      right: 18px;
+    }}
+    .console {{
+      position: absolute;
+      left: 22px;
+      bottom: 24px;
+      width: 108px;
+      height: 58px;
+      background: #130f0c;
+      border: 4px solid var(--wood-2);
+      box-shadow: inset 0 0 0 3px #050403;
+    }}
+    .console::before {{
+      content: "";
+      position: absolute;
+      left: 12px;
+      top: 10px;
+      width: 72px;
+      height: 18px;
+      background: var(--phase, var(--blue));
+      box-shadow: 0 28px 0 #2d1d12;
+      opacity: .9;
+    }}
+    .station {{
+      position: absolute;
+      right: 26px;
+      bottom: 28px;
+      width: 92px;
+      height: 72px;
+      border: 4px solid var(--brass);
+      background: #0a1116;
+      box-shadow: inset 0 0 0 5px #172a37;
+    }}
+    .station::before {{
+      content: "";
+      position: absolute;
+      left: 25px;
+      top: 18px;
+      width: 32px;
+      height: 32px;
+      background: var(--phase, var(--blue));
+      box-shadow: 0 0 16px var(--phase, var(--blue));
+      animation: pulse 2.4s steps(4) infinite;
+    }}
+    .metric-line {{
+      position: absolute;
+      left: 18px;
+      right: 18px;
+      bottom: 100px;
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }}
+    .mini {{
+      min-width: 48px;
+      padding: 5px 6px;
+      border: 2px solid #4b3321;
+      background: #0f0b09;
+      font-size: 10px;
+      color: var(--ink);
+    }}
+    .agent {{
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      background: var(--phase, var(--blue));
+      border: 3px solid #071018;
+      box-shadow: 0 0 0 2px rgba(255,255,255,.22), 0 0 14px var(--phase, var(--blue));
+      animation: patrol 3.2s steps(6) infinite;
+      z-index: 3;
+    }}
+    .agent::before {{
+      content: "";
+      position: absolute;
+      left: 4px;
+      top: -8px;
+      width: 8px;
+      height: 5px;
+      background: #f2d7a5;
+      border: 2px solid #071018;
+    }}
+    .agent[data-role="reviewer"] {{ animation-duration: 4.2s; }}
+    .agent[data-role="security"] {{ animation-duration: 2.5s; }}
+    .path {{
+      position: absolute;
+      height: 6px;
+      background: rgba(194,139,67,.45);
+      box-shadow: 0 0 0 2px rgba(20,12,8,.8);
+      transform-origin: left center;
+    }}
+    aside {{
+      border-left: 5px solid #070504;
+      background: #100c0a;
+      min-width: 0;
+      padding: 16px;
+      overflow: auto;
+    }}
+    .panel {{
+      border: 4px solid var(--stone-4);
+      background: #18110d;
+      padding: 14px;
+      box-shadow: inset -3px -3px 0 #080504, inset 3px 3px 0 #3b2a1e;
+      margin-bottom: 14px;
+    }}
+    h2 {{
+      margin: 0 0 10px;
+      font-size: 15px;
+      text-transform: uppercase;
+    }}
+    .repo-list {{
+      display: grid;
+      gap: 8px;
+    }}
+    button.repo-button {{
+      width: 100%;
+      min-height: 44px;
+      text-align: left;
+      border: 3px solid var(--stone-4);
+      background: #0d0907;
+      color: var(--ink);
+      padding: 8px;
+      cursor: pointer;
+      font: inherit;
+      box-shadow: inset -2px -2px 0 #050403;
+    }}
+    button.repo-button:focus {{
+      outline: 3px solid var(--blue);
+      outline-offset: 2px;
+    }}
+    .detail {{
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }}
+    .task-list {{
+      margin: 8px 0 0;
+      padding: 0;
+      list-style: none;
+      display: grid;
+      gap: 7px;
+    }}
+    .task-list li {{
+      border-left: 4px solid var(--brass);
+      padding-left: 8px;
+      color: var(--ink);
+      font-size: 12px;
+    }}
+    @keyframes pulse {{
+      0%, 100% {{ opacity: .7; transform: scale(1); }}
+      50% {{ opacity: 1; transform: scale(1.14); }}
+    }}
+    @keyframes patrol {{
+      0% {{ transform: translate(0, 0); }}
+      25% {{ transform: translate(24px, 0); }}
+      50% {{ transform: translate(24px, 24px); }}
+      75% {{ transform: translate(0, 24px); }}
+      100% {{ transform: translate(0, 0); }}
+    }}
+    @media (max-width: 900px) {{
+      .shell {{ grid-template-columns: 1fr; }}
+      aside {{ border-left: 0; border-top: 5px solid #070504; }}
+      .world {{ min-width: 760px; min-height: 620px; }}
+    }}
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Harness Hub</h1>
+      <div class="subhead" id="generated">Mapa operacional local</div>
+    </div>
+    <div class="hud" aria-label="Resumo do hub">
+      <div class="chip" id="repoCount">Repos: 0</div>
+      <div class="chip" id="activeCount">Ativos: 0</div>
+      <div class="chip" id="taskCount">Tasks: 0</div>
+      <div class="chip" id="findingCount">Findings: 0</div>
+    </div>
+  </header>
+  <div class="shell">
+    <main class="world-wrap" aria-label="Mapa pixelado do Harness">
+      <div class="world" id="world">
+        <div class="hall"></div>
+        <div class="core" title="Hub core"></div>
+      </div>
+    </main>
+    <aside>
+      <section class="panel">
+        <h2>Projetos</h2>
+        <div class="repo-list" id="repoList"></div>
+      </section>
+      <section class="panel">
+        <h2>Inspecao</h2>
+        <div class="detail" id="detail">Selecione uma sala no mapa.</div>
+      </section>
+    </aside>
+  </div>
+  <script>
+    const initialState = {initial_state};
+    const refreshMs = {max(refresh_seconds, 1) * 1000};
+    let hubState = initialState;
+    let selectedIndex = 0;
+    const roomSlots = [
+      [32, 36], [708, 36], [32, 418], [708, 418],
+      [370, 36], [370, 418], [32, 226], [708, 226]
+    ];
+    const phaseLabels = {{
+      queue: "Fila", build: "Implementacao", review: "Revisao",
+      security: "Security", report: "Relatorio", idle: "Ocioso", offline: "Offline"
+    }};
+    function esc(value) {{
+      return String(value ?? "").replace(/[&<>"']/g, char => ({{
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }}[char]));
+    }}
+    function roomPosition(index) {{
+      if (index < roomSlots.length) return roomSlots[index];
+      const col = index % 3;
+      const row = Math.floor(index / 3);
+      return [32 + col * 338, 650 + row * 240];
+    }}
+    function render() {{
+      document.getElementById("generated").textContent = "Atualizado " + (hubState.generated_at || "-");
+      document.getElementById("repoCount").textContent = "Repos: " + (hubState.repo_count || 0);
+      document.getElementById("activeCount").textContent = "Ativos: " + (hubState.active_repos || 0);
+      document.getElementById("taskCount").textContent = "Tasks: " + (hubState.total_tasks || 0);
+      document.getElementById("findingCount").textContent = "Findings: " + (hubState.total_findings || 0);
+      const world = document.getElementById("world");
+      world.querySelectorAll(".room,.path").forEach(node => node.remove());
+      const repos = hubState.repos || [];
+      const maxY = repos.reduce((max, repo, index) => Math.max(max, roomPosition(index)[1] + 250), 680);
+      world.style.minHeight = maxY + "px";
+      repos.forEach((repo, index) => {{
+        const [left, top] = roomPosition(index);
+        const room = document.createElement("section");
+        room.className = "room";
+        room.dataset.phase = repo.phase || "idle";
+        room.style.left = left + "px";
+        room.style.top = top + "px";
+        room.tabIndex = 0;
+        room.setAttribute("role", "button");
+        room.setAttribute("aria-label", "Abrir " + (repo.project || repo.root));
+        room.innerHTML = `
+          <div class="room-title">${{esc(repo.project || "Projeto")}}</div>
+          <div class="room-meta">${{esc(phaseLabels[repo.phase] || repo.phase)}} · ${{esc(repo.branch || "sem branch")}}</div>
+          <div class="metric-line">
+            <div class="mini">T ${{esc(repo.counts?.tasks ?? 0)}}</div>
+            <div class="mini">Q ${{esc(repo.counts?.queued ?? 0)}}</div>
+            <div class="mini">A ${{esc(repo.counts?.artifacts ?? 0)}}</div>
+            <div class="mini">S ${{esc(repo.counts?.security_findings ?? 0)}}</div>
+          </div>
+          <div class="console"></div>
+          <div class="station"></div>
+        `;
+        (repo.agents || []).slice(0, 4).forEach((agent, agentIndex) => {{
+          const sprite = document.createElement("div");
+          sprite.className = "agent";
+          sprite.dataset.role = agent.role || "observer";
+          sprite.title = (agent.name || "Agent") + " · " + (agent.task_id || "");
+          sprite.style.left = 148 + agentIndex * 22 + "px";
+          sprite.style.top = 86 + (agentIndex % 2) * 28 + "px";
+          sprite.style.animationDelay = (agentIndex * -0.55) + "s";
+          room.appendChild(sprite);
+        }});
+        room.addEventListener("click", () => {{ selectedIndex = index; renderDetail(); }});
+        room.addEventListener("keydown", event => {{
+          if (event.key === "Enter" || event.key === " ") {{
+            event.preventDefault();
+            selectedIndex = index;
+            renderDetail();
+          }}
+        }});
+        world.appendChild(room);
+      }});
+      renderRepoList();
+      renderDetail();
+    }}
+    function renderRepoList() {{
+      const list = document.getElementById("repoList");
+      list.innerHTML = "";
+      (hubState.repos || []).forEach((repo, index) => {{
+        const button = document.createElement("button");
+        button.className = "repo-button";
+        button.innerHTML = `<strong>${{esc(repo.project || repo.root)}}</strong><br><span class="detail">${{esc(phaseLabels[repo.phase] || repo.phase)}} · ${{esc(repo.root)}}</span>`;
+        button.addEventListener("click", () => {{ selectedIndex = index; renderDetail(); }});
+        list.appendChild(button);
+      }});
+    }}
+    function renderDetail() {{
+      const repo = (hubState.repos || [])[selectedIndex];
+      const detail = document.getElementById("detail");
+      if (!repo) {{
+        detail.textContent = "Nenhum repo carregado.";
+        return;
+      }}
+      const activeTask = repo.active_task || {{}};
+      const queue = repo.queue || [];
+      const tasks = repo.tasks || [];
+      detail.innerHTML = `
+        <strong>${{esc(repo.project)}}</strong><br>
+        Fase: ${{esc(phaseLabels[repo.phase] || repo.phase)}}<br>
+        Raiz: ${{esc(repo.root)}}<br>
+        Branch: ${{esc(repo.branch || "-")}}<br>
+        Profile: ${{esc(repo.active_profile || "-")}}<br>
+        Task ativa: ${{esc(activeTask.task_id || "-")}} ${{esc(activeTask.title || "")}}<br>
+        Run: ${{esc(repo.latest_run || "-")}}<br>
+        Checkpoint: ${{esc(repo.latest_checkpoint || "-")}}<br>
+        Security findings: ${{esc(repo.counts?.security_findings ?? 0)}}<br>
+        <br><strong>Fila</strong>
+        <ul class="task-list">${{queue.slice(-5).map(item => `<li>${{esc(item.id)}} [${{esc(item.status)}}] ${{esc(item.title)}}</li>`).join("") || "<li>Fila vazia.</li>"}}</ul>
+        <br><strong>Tasks recentes</strong>
+        <ul class="task-list">${{tasks.slice(-5).map(task => `<li>${{esc(task.task_id)}} [${{esc(task.status)}}] ${{esc(task.title)}}</li>`).join("") || "<li>Nenhuma task.</li>"}}</ul>
+      `;
+    }}
+    async function refresh() {{
+      try {{
+        const response = await fetch("hub-state.json?ts=" + Date.now(), {{ cache: "no-store" }});
+        if (!response.ok) return;
+        hubState = await response.json();
+        render();
+      }} catch (error) {{
+        console.warn("Hub refresh failed", error);
+      }}
+    }}
+    render();
+    setInterval(refresh, refreshMs);
+  </script>
+</body>
+</html>
+"""
+
+
+def write_dashboard_hub(root: Path, paths: list[Path], refresh_seconds: int = 3) -> dict[str, Any]:
+    state = collect_dashboard_hub_state(paths)
+    target = dashboard_hub_root(root)
+    write_text(target / "index.html", render_dashboard_hub_html(state, refresh_seconds))
+    write_json(target / "hub-state.json", state)
+    return {"state": state, "path": target / "index.html", "state_path": target / "hub-state.json"}
+
+
 def render_dashboard_html(root: Path, state: dict[str, Any]) -> str:
     def esc(value: Any) -> str:
         return html.escape(str(value or ""))
@@ -3932,6 +4634,77 @@ def command_dashboard_html(args: argparse.Namespace) -> None:
     write_text(path, render_dashboard_html(root, state))
     write_json(dashboard_root(root) / "state.json", state)
     print(f"Dashboard HTML: {path}")
+
+
+def command_dashboard_hub(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    paths = hub_repo_paths(args)
+    result = write_dashboard_hub(root, paths, args.refresh_seconds)
+    print(f"Harness Hub: {result['path']}")
+    print(f"Repos monitorados: {len(result['state']['repos'])}")
+    for repo in result["state"]["repos"]:
+        suffix = f" ({repo.get('error')})" if repo.get("error") else ""
+        print(f"- {repo.get('project')} [{repo.get('phase')}]{suffix}: {repo.get('root')}")
+
+
+def command_dashboard_hub_state(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    paths = hub_repo_paths(args)
+    state = collect_dashboard_hub_state(paths)
+    path = dashboard_hub_root(root) / "hub-state.json"
+    write_json(path, state)
+    print(json.dumps(state, indent=2, ensure_ascii=False) if args.json else f"Hub state: {path}")
+
+
+def command_dashboard_hub_serve(args: argparse.Namespace) -> None:
+    import functools
+    import http.server
+
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    paths = hub_repo_paths(args)
+    write_dashboard_hub(root, paths, args.refresh_seconds)
+    directory = dashboard_hub_root(root)
+
+    class HubHandler(http.server.SimpleHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - stdlib hook
+            request_path = urllib.parse.urlparse(self.path).path
+            if request_path in {"/hub-state.json", "/state.json"}:
+                state = collect_dashboard_hub_state(paths)
+                body = json.dumps(state, indent=2, ensure_ascii=False).encode("utf-8")
+                write_json(directory / "hub-state.json", state)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            super().do_GET()
+
+        def log_message(self, format: str, *values: Any) -> None:  # noqa: A002
+            if args.quiet:
+                return
+            super().log_message(format, *values)
+
+    handler = functools.partial(HubHandler, directory=str(directory))
+    server = http.server.ThreadingHTTPServer((args.host, args.port), handler)
+    print(f"Harness Hub em http://{args.host}:{args.port}/")
+    print("Repos:")
+    for path in paths:
+        print(f"- {path}")
+    try:
+        if args.once:
+            server.handle_request()
+        else:
+            server.serve_forever()
+    finally:
+        server.server_close()
 
 
 def command_dashboard_serve(args: argparse.Namespace) -> None:
@@ -5264,6 +6037,22 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard_html.set_defaults(func=command_dashboard_html)
     dashboard_build = dashboard_sub.add_parser("build", help="Alias de html")
     dashboard_build.set_defaults(func=command_dashboard_html)
+    dashboard_hub = dashboard_sub.add_parser("hub", help="Gera hub pixel-art multi-repo")
+    dashboard_hub.add_argument("--watch-repo", action="append", help="Repo Harness a monitorar; repetivel")
+    dashboard_hub.add_argument("--refresh-seconds", type=int, default=3, help="Intervalo de refresh da UI")
+    dashboard_hub.set_defaults(func=command_dashboard_hub)
+    dashboard_hub_state = dashboard_sub.add_parser("hub-state", help="Atualiza JSON do hub multi-repo")
+    dashboard_hub_state.add_argument("--watch-repo", action="append", help="Repo Harness a monitorar; repetivel")
+    dashboard_hub_state.add_argument("--json", action="store_true", help="Imprime JSON")
+    dashboard_hub_state.set_defaults(func=command_dashboard_hub_state)
+    dashboard_hub_serve = dashboard_sub.add_parser("hub-serve", help="Serve hub pixel-art multi-repo")
+    dashboard_hub_serve.add_argument("--watch-repo", action="append", help="Repo Harness a monitorar; repetivel")
+    dashboard_hub_serve.add_argument("--host", default="127.0.0.1")
+    dashboard_hub_serve.add_argument("--port", type=int, default=8899)
+    dashboard_hub_serve.add_argument("--refresh-seconds", type=int, default=3, help="Intervalo de refresh da UI")
+    dashboard_hub_serve.add_argument("--once", action="store_true", help="Atende uma requisicao e encerra")
+    dashboard_hub_serve.add_argument("--quiet", action="store_true", help="Reduz log HTTP")
+    dashboard_hub_serve.set_defaults(func=command_dashboard_hub_serve)
     dashboard_serve = dashboard_sub.add_parser("serve", help="Serve dashboard local")
     dashboard_serve.add_argument("--host", default="127.0.0.1")
     dashboard_serve.add_argument("--port", type=int, default=8765)

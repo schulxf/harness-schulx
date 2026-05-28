@@ -44,6 +44,34 @@ It should show:
 
 Dashboard actions must still respect the same policy gates as CLI actions.
 
+## Pixel-Art Hub
+
+The hub is the multi-repo dashboard mode. It uses the same local evidence as the
+normal dashboard, but renders it as a top-down operations map:
+
+- each watched repo is a room;
+- queue/build/review/security/report are visible as room phases;
+- agents are small sprites moving inside the rooms;
+- the central core summarizes all monitored repos;
+- clicking a room opens task, queue, checkpoint, run and security details.
+
+Commands:
+
+```powershell
+python <harness.py> --repo C:\control-repo dashboard hub `
+  --watch-repo C:\repo-a `
+  --watch-repo C:\repo-b
+
+python <harness.py> --repo C:\control-repo dashboard hub-serve `
+  --watch-repo C:\repo-a `
+  --watch-repo C:\repo-b `
+  --port 8899
+```
+
+The control repo is where the hub HTML is written. Watched repos are read-only
+inputs. `hub-serve` refreshes `hub-state.json` on demand, so the browser can
+poll without a database, websocket server or external service.
+
 ## Task Queue
 
 The queue stores planned, ready, active, blocked and completed tasks:

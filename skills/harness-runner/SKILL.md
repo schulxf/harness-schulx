@@ -9,8 +9,8 @@ Use o Harness Runner como camada operacional ao redor das skills de
 planejamento e codigo. Nao substitua Grillme, PRD, issues ou TDD. Coloque
 essas etapas em um protocolo repetivel.
 
-v0.3 e local-first: dashboard, queue, supervisor, checkpoints, artifact viewer,
-project memory, plugin registry, security scanner e Telegram remote control sao
+v0.3 e local-first: dashboard, pixel-art hub multi-repo, queue, supervisor,
+checkpoints, artifact viewer, project memory, plugin registry, security scanner e Telegram remote control sao
 superficies sobre o mesmo estado `.harness/`.
 
 ## CLI
@@ -73,6 +73,7 @@ python <harness.py> --repo $APP_REPO --allow-main init
 ## v0.3 Superficies
 
 - dashboard local: queue, run ativa, sensores, checkpoints, budget e artefatos;
+- pixel-art hub: mapa multi-repo para acompanhar agentes e tarefas em salas operacionais;
 - task queue: uma task ativa por repo, outras em `planned`, `ready`, `blocked` ou `done`;
 - supervisor: aplica policy, inicia runs, salva checkpoints e bloqueia transicoes inseguras;
 - resume/checkpoints: retomar pela ultima evidencia em `.harness`, nao pela memoria do chat;

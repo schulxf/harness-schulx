@@ -61,6 +61,7 @@ terminal.
 Core v0.3 surfaces:
 
 - local dashboard for queue, active run, sensors, checkpoints and artifacts;
+- pixel-art multi-repo hub for watching several Harness projects as one map;
 - task queue with one active implementation task per repo;
 - supervisor that starts runs, watches budgets, records checkpoints and blocks
   unsafe transitions;
@@ -373,6 +374,39 @@ media/
 Large artifacts remain local by default. Reports may link to them without
 copying them into git.
 
+### Pixel-Art Multi-Repo Hub
+
+The hub is a local top-down operations map. Each watched repo becomes a room,
+and active work appears as small agent sprites moving around consoles, stations
+and the central hub core.
+
+Generate a static hub:
+
+```powershell
+python $HARNESS --repo $APP_REPO dashboard hub `
+  --watch-repo "C:\repo-a" `
+  --watch-repo "C:\repo-b"
+```
+
+Serve it with live polling:
+
+```powershell
+python $HARNESS --repo $APP_REPO dashboard hub-serve `
+  --watch-repo "C:\repo-a" `
+  --watch-repo "C:\repo-b" `
+  --port 8899
+```
+
+Open:
+
+```text
+http://127.0.0.1:8899/
+```
+
+`hub-serve` recalculates `hub-state.json` from each repo's `.harness/` whenever
+the browser polls it, so the map updates as tasks move through queue, build,
+review, security and report states.
+
 ### Budgets And Profiles
 
 Profiles define how much evidence and review depth a task needs:
@@ -576,10 +610,10 @@ status               Show project state
 telegram             Telegram integration commands
 ```
 
-v0.3 command families also include dashboard, queue, supervisor, checkpoint,
-resume, github, profile, artifact, memory, plugin and security operations. Some
-installations expose these through plugins while the core CLI remains local and
-deterministic.
+v0.3 command families also include dashboard, pixel-art hub, queue, supervisor,
+checkpoint, resume, github, profile, artifacts, memory, plugin and security
+operations. Some installations expose these through plugins while the core CLI
+remains local and deterministic.
 
 ## Development
 

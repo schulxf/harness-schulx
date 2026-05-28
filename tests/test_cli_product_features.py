@@ -228,3 +228,43 @@ def test_dashboard_html_generation(tmp_path):
     assert "<!doctype html>" in html.lower()
     assert "Dashboard source" in html
     assert "TASK-001" in html
+
+
+def test_dashboard_hub_generation_for_multiple_repos(tmp_path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    repo_a = init_repo(tmp_path / "a")
+    repo_b = init_repo(tmp_path / "b")
+    issue_a = repo_a / "issue-a.md"
+    issue_b = repo_b / "issue-b.md"
+    issue_a.write_text("# Alpha task\n\n## Criterios\n\n- [ ] ok\n", encoding="utf-8")
+    issue_b.write_text("# Beta task\n\n## Criterios\n\n- [ ] ok\n", encoding="utf-8")
+    run(["--repo", str(repo_a), "task", "import", str(issue_a)])
+    run(["--repo", str(repo_b), "task", "import", str(issue_b)])
+    run(["--repo", str(repo_a), "queue", "add", "TASK-001"])
+    run(["--repo", str(repo_b), "queue", "add", "TASK-001"])
+
+    assert run(
+        [
+            "--repo",
+            str(repo_a),
+            "dashboard",
+            "hub",
+            "--watch-repo",
+            str(repo_a),
+            "--watch-repo",
+            str(repo_b),
+        ]
+    ) == 0
+
+    hub = repo_a / ".harness" / "dashboard" / "hub" / "index.html"
+    state_path = repo_a / ".harness" / "dashboard" / "hub" / "hub-state.json"
+    assert hub.is_file()
+    assert state_path.is_file()
+    html = hub.read_text(encoding="utf-8")
+    state = read_json(state_path)
+    assert "Harness Hub" in html
+    assert "room" in html
+    assert state["repo_count"] == 2
+    assert {repo["project"] for repo in state["repos"]} == {"test"}
+    assert state["total_tasks"] == 2

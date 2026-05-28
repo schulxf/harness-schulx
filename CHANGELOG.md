@@ -4,6 +4,7 @@
 
 - Documented the official v0.3 Harness operating model.
 - Added local dashboard, task queue and supervisor concepts.
+- Added pixel-art multi-repo Harness Hub with live local polling.
 - Added resume/checkpoint guidance for long-running work.
 - Added GitHub Issues/PR helper model.
 - Added budgets and profiles: `fast`, `standard`, `deep`.

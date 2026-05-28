@@ -20,8 +20,9 @@ python bin\harness.py --help
 - Skill copy updated in `skills/harness-runner/SKILL.md`.
 - v0.3 protocol docs updated.
 - Telegram remote-control docs updated.
-- Dashboard, queue, supervisor, resume/checkpoint, GitHub helper, budget,
-  artifact, memory, plugin and security scanner docs checked for consistency.
+- Dashboard, pixel-art hub, queue, supervisor, resume/checkpoint, GitHub helper,
+  budget, artifact, memory, plugin and security scanner docs checked for
+  consistency.
 - Tests updated for new behavior.
 
 ## GitHub
