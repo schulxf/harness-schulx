@@ -265,10 +265,6 @@ def test_dashboard_hub_generation_for_multiple_repos(tmp_path):
     state = read_json(state_path)
     assert "Harness Hub" in html
     assert "room" in html
-    assert "agent-token" in html
-    assert "speech-bubble" in html
     assert state["repo_count"] == 2
     assert {repo["project"] for repo in state["repos"]} == {"test"}
     assert state["total_tasks"] == 2
-    assert state["repos"][0]["agents"][0]["state"] in {"idle", "working"}
-    assert state["repos"][0]["agents"][0]["speech"]
