@@ -272,3 +272,60 @@ def test_dashboard_hub_generation_for_multiple_repos(tmp_path):
     assert state["total_tasks"] == 2
     assert state["repos"][0]["agents"][0]["state"] in {"idle", "working"}
     assert state["repos"][0]["agents"][0]["speech"]
+
+
+def test_event_stream_and_agent_registry_follow_run(tmp_path):
+    repo = init_repo(tmp_path)
+    issue = repo / "issue.md"
+    issue.write_text("# Agent task\n\n## Criterios\n\n- [ ] ok\n", encoding="utf-8")
+    run(["--repo", str(repo), "task", "import", str(issue)])
+    run(["--repo", str(repo), "contract", "TASK-001", "--criteria", "ok"])
+
+    assert run(["--repo", str(repo), "start", "TASK-001"]) == 0
+
+    events = (repo / ".harness" / "events.jsonl").read_text(encoding="utf-8")
+    assert "run_started" in events
+    registry = read_json(repo / ".harness" / "agents" / "registry.json")
+    assert registry["agents"][0]["task_id"] == "TASK-001"
+    assert registry["agents"][0]["state"] == "working"
+
+    assert run(["--repo", str(repo), "events", "list", "--json"]) == 0
+    assert run(["--repo", str(repo), "agent", "list", "--json"]) == 0
+
+
+def test_dashboard_hub_repo_registry_and_manual_agent(tmp_path):
+    (tmp_path / "control").mkdir()
+    (tmp_path / "watched").mkdir()
+    control = init_repo(tmp_path / "control")
+    watched = init_repo(tmp_path / "watched")
+
+    assert run(["--repo", str(control), "dashboard", "hub-add-repo", str(watched)]) == 0
+    assert run(
+        [
+            "--repo",
+            str(watched),
+            "agent",
+            "register",
+            "agent-a",
+            "--role",
+            "builder",
+            "--state",
+            "working",
+            "--speech",
+            "Montando teste local.",
+        ]
+    ) == 0
+    assert run(["--repo", str(control), "dashboard", "hub"]) == 0
+
+    state = read_json(control / ".harness" / "dashboard" / "hub" / "hub-state.json")
+    assert state["repo_count"] == 2
+    watched_state = next(repo for repo in state["repos"] if repo["root"] == str(watched))
+    assert watched_state["agents"][0]["id"] == "agent-a"
+    assert watched_state["agents"][0]["speech"] == "Montando teste local."
+
+
+def test_wmux_state_handles_unavailable_pipe(monkeypatch):
+    monkeypatch.setattr(harness, "wmux_pipe_path", lambda: r"\\.\pipe\missing-harness-test")
+    state = harness.collect_wmux_state()
+    assert state["available"] is False
+    assert state["error"]

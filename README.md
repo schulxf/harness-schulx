@@ -382,6 +382,13 @@ the agent to inspect the current task, state, run, checkpoint, queue and recent
 task history. A working agent bobs in place near the workstation; an idle agent
 walks around the room.
 
+Register repos once:
+
+```powershell
+python $HARNESS --repo $APP_REPO dashboard hub-add-repo "C:\repo-a" "C:\repo-b"
+python $HARNESS --repo $APP_REPO dashboard hub-list-repos
+```
+
 Generate a static hub:
 
 ```powershell
@@ -409,15 +416,37 @@ http://127.0.0.1:8899/
 the browser polls it, so the map updates as tasks move through queue, build,
 review, security and report states.
 
+Harness actions also write a shared event stream:
+
+```text
+.harness/events.jsonl
+.harness/agents/registry.json
+```
+
+The hub uses that stream for the clickable timeline and uses the registry to
+show real agents when they register themselves:
+
+```powershell
+python $HARNESS --repo $APP_REPO agent register builder-1 `
+  --role builder `
+  --task-id TASK-001 `
+  --speech "Working on the failing test."
+
+python $HARNESS --repo $APP_REPO agent heartbeat builder-1 `
+  --speech "Tests are green; preparing review."
+```
+
 If wmux is running, `hub-serve` also exposes a local wmux bridge:
 
 - list visible wmux panes, terminal surfaces and wmux agents;
 - focus an existing wmux terminal from the hub;
 - open a new wmux terminal for the selected repo;
-- send a short command or message to the active terminal.
+- send a short command or message to the active terminal;
+- read the active terminal screen when the installed wmux renderer supports
+  screen serialization.
 
-The bridge uses the local wmux named pipe (`WMUX_PIPE`) and never stores tokens
-or credentials in the dashboard state.
+The bridge uses the local wmux named pipe (`WMUX_PIPE`), binds actions to the
+local server token and logs every hub terminal action into `.harness/events.jsonl`.
 
 ### Budgets And Profiles
 
@@ -553,6 +582,10 @@ Run a combined mirror and inbox bridge:
 ```powershell
 python $HARNESS --repo $APP_REPO telegram bridge --include-tools
 ```
+
+`telegram bridge` also forwards new Harness events from `.harness/events.jsonl`
+unless you pass `--no-harness-events`. This keeps Telegram, the hub and CLI
+status aligned on the same event stream.
 
 By default, bridge messages are queued in:
 

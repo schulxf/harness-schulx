@@ -386,6 +386,22 @@ def dashboard_hub_root(root: Path) -> Path:
     return dashboard_root(root) / "hub"
 
 
+def hub_repo_registry_path(root: Path) -> Path:
+    return dashboard_hub_root(root) / "repos.json"
+
+
+def event_stream_path(root: Path) -> Path:
+    return harness_root(root) / "events.jsonl"
+
+
+def agents_root(root: Path) -> Path:
+    return harness_root(root) / "agents"
+
+
+def agent_registry_path(root: Path) -> Path:
+    return agents_root(root) / "registry.json"
+
+
 def memory_index_path(root: Path) -> Path:
     return harness_root(root) / "memory" / "index.json"
 
@@ -895,6 +911,228 @@ def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
         handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    items: list[dict[str, Any]] = []
+    for line in read_text(path).splitlines():
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            items.append(payload)
+    return items
+
+
+def append_harness_event(
+    root: Path,
+    event_type: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    run_dir: Path | None = None,
+    task_id: str | None = None,
+    agent_id: str | None = None,
+    source: str = "harness",
+) -> dict[str, Any]:
+    payload = payload or {}
+    inferred_task_id = task_id or str(payload.get("task_id") or "")
+    if not inferred_task_id and run_dir:
+        inferred_task_id = run_dir.parent.name
+    event = {
+        "id": f"EVT-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}",
+        "ts": utc_now(),
+        "type": event_type,
+        "source": source,
+        "project": root.name,
+        "root": str(root),
+        "task_id": inferred_task_id,
+        "agent_id": agent_id or str(payload.get("agent_id") or ""),
+        "run_dir": str(run_dir) if run_dir else str(payload.get("run_dir") or ""),
+        "payload": payload,
+    }
+    append_jsonl(event_stream_path(root), event)
+    if run_dir:
+        append_jsonl(run_dir / "events.jsonl", event)
+    return event
+
+
+def read_recent_harness_events(root: Path, limit: int = 40, task_id: str | None = None) -> list[dict[str, Any]]:
+    events = read_jsonl(event_stream_path(root))
+    if task_id:
+        events = [event for event in events if event.get("task_id") == task_id]
+    if not events:
+        legacy: list[dict[str, Any]] = []
+        for run_dir in iter_run_dirs(root):
+            for event in read_jsonl(run_dir / "events.jsonl"):
+                event.setdefault("run_dir", str(run_dir))
+                event.setdefault("task_id", run_dir.parent.name)
+                legacy.append(event)
+        events = sorted(legacy, key=lambda event: str(event.get("ts") or ""))
+    return events[-limit:]
+
+
+def read_new_harness_events(root: Path, offset: int | None = None) -> tuple[list[dict[str, Any]], int]:
+    path = event_stream_path(root)
+    if not path.exists():
+        return [], 0
+    offset = int(offset or 0)
+    events: list[dict[str, Any]] = []
+    with path.open("rb") as handle:
+        handle.seek(offset)
+        for raw in handle:
+            try:
+                payload = json.loads(raw.decode("utf-8"))
+            except Exception:
+                continue
+            if isinstance(payload, dict):
+                events.append(payload)
+        new_offset = handle.tell()
+    return events, new_offset
+
+
+def telegram_message_from_harness_event(event: dict[str, Any]) -> str:
+    event_type = str(event.get("type") or "event")
+    task_id = str(event.get("task_id") or event.get("payload", {}).get("task_id") or "-")
+    project = str(event.get("project") or "Harness")
+    payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    summary = payload.get("summary") or payload.get("speech") or payload.get("message")
+    if summary:
+        return f"Harness: {project}\n{task_id}: {summary}"
+    return f"Harness: {project}\n{task_id}: {event_type}"
+
+
+def load_agent_registry(root: Path) -> dict[str, Any]:
+    return read_json(agent_registry_path(root), {"agents": []})
+
+
+def save_agent_registry(root: Path, registry: dict[str, Any]) -> None:
+    write_json(agent_registry_path(root), registry)
+
+
+def agent_status_from_state(state: str) -> str:
+    if state in {"idle", "done", "blocked"}:
+        return state
+    return "working"
+
+
+def upsert_agent(
+    root: Path,
+    agent_id: str,
+    *,
+    name: str,
+    role: str,
+    state: str,
+    task_id: str = "",
+    task_title: str = "",
+    phase: str = "",
+    speech: str = "",
+    run_dir: str = "",
+    surface_id: str = "",
+    event_id: str = "",
+) -> dict[str, Any]:
+    registry = load_agent_registry(root)
+    agents = [agent for agent in registry.get("agents", []) if isinstance(agent, dict)]
+    now = utc_now()
+    found: dict[str, Any] | None = None
+    for agent in agents:
+        if agent.get("id") == agent_id:
+            found = agent
+            break
+    if not found:
+        found = {"id": agent_id, "created_at": now}
+        agents.append(found)
+    found.update(
+        {
+            "name": name,
+            "role": role,
+            "state": state,
+            "status": agent_status_from_state(state),
+            "task_id": task_id,
+            "task_title": task_title,
+            "phase": phase or role,
+            "speech": speech,
+            "run_dir": run_dir,
+            "surface_id": surface_id or found.get("surface_id", ""),
+            "last_event_id": event_id or found.get("last_event_id", ""),
+            "heartbeat_at": now,
+            "updated_at": now,
+        }
+    )
+    registry["agents"] = agents
+    registry["updated_at"] = now
+    save_agent_registry(root, registry)
+    return found
+
+
+def load_hub_agents(root: Path) -> list[dict[str, Any]]:
+    agents = [agent for agent in load_agent_registry(root).get("agents", []) if isinstance(agent, dict)]
+    if not agents:
+        return []
+    active_states = {"working", "idle", "blocked"}
+    return [
+        agent
+        for agent in agents
+        if str(agent.get("state") or agent.get("status") or "idle") in active_states
+    ][-8:]
+
+
+def sync_agent_from_event(root: Path, event: dict[str, Any]) -> None:
+    event_type = str(event.get("type") or "")
+    payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    task_id = str(event.get("task_id") or payload.get("task_id") or "")
+    if not task_id:
+        return
+    task_title = ""
+    try:
+        task_title = str(find_task(root, task_id).get("title") or "")
+    except SystemExit:
+        pass
+    role = {
+        "run_started": "builder",
+        "sensors_completed": "builder",
+        "evaluation_brief_created": "reviewer",
+        "evaluation_recorded": "reviewer",
+        "fix_brief_created": "builder",
+        "report_created": "reporter",
+    }.get(event_type, "operator")
+    state = {
+        "evaluation_recorded": "idle",
+        "report_created": "idle",
+    }.get(event_type, "working")
+    phase = {
+        "run_started": "build",
+        "sensors_completed": "review" if payload.get("passed") else "build",
+        "evaluation_brief_created": "review",
+        "evaluation_recorded": "report" if payload.get("status") == "pass" else "build",
+        "fix_brief_created": "build",
+        "report_created": "report",
+    }.get(event_type, role)
+    speech = payload.get("summary") or {
+        "run_started": f"Comecei {task_id}.",
+        "sensors_completed": f"Conferencias de {task_id} {'passaram' if payload.get('passed') else 'falharam'}.",
+        "evaluation_brief_created": f"Revisao pronta para {task_id}.",
+        "evaluation_recorded": f"Decisao de {task_id}: {payload.get('status')}.",
+        "fix_brief_created": f"Preparando correcao de {task_id}.",
+        "report_created": f"Relatorio de {task_id} fechado.",
+    }.get(event_type, f"Atualizei {task_id}.")
+    upsert_agent(
+        root,
+        str(event.get("agent_id") or f"{role}-{task_id}").lower(),
+        name=hub_agent_name_for_role(role) if "hub_agent_name_for_role" in globals() else role.title(),
+        role=role,
+        state=state,
+        task_id=task_id,
+        task_title=task_title,
+        phase=phase,
+        speech=str(speech),
+        run_dir=str(event.get("run_dir") or ""),
+        event_id=str(event.get("id") or ""),
+    )
+
+
 def http_json_post(
     url: str,
     payload: dict[str, Any],
@@ -1068,7 +1306,8 @@ def append_and_maybe_notify_event(
     event_type: str,
     payload: dict[str, Any],
 ) -> None:
-    append_event(run_dir, event_type, payload)
+    event = append_harness_event(root, event_type, payload, run_dir=run_dir)
+    sync_agent_from_event(root, event)
     try:
         config = load_config(root)
         tconfig = telegram_config(config)
@@ -1645,6 +1884,8 @@ def command_init(args: argparse.Namespace) -> None:
         "checkpoints",
         "artifacts",
         "dashboard",
+        "dashboard/hub",
+        "agents",
         "memory",
         "plugins",
         "security",
@@ -1700,6 +1941,15 @@ def command_init(args: argparse.Namespace) -> None:
 
     if not artifacts_index_path(root).exists():
         write_json(artifacts_index_path(root), [])
+
+    if not agent_registry_path(root).exists():
+        write_json(agent_registry_path(root), {"agents": [], "updated_at": utc_now()})
+
+    if not hub_repo_registry_path(root).exists():
+        write_json(hub_repo_registry_path(root), {"repos": [str(root)], "updated_at": utc_now()})
+
+    if not event_stream_path(root).exists():
+        write_text(event_stream_path(root), "")
 
     progress = hroot / "progress.md"
     if not progress.exists():
@@ -1838,6 +2088,7 @@ def create_task(root: Path, title: str, body: str, source: str) -> dict[str, Any
     tasks = load_tasks(root)
     tasks.append(task)
     save_tasks(root, tasks)
+    append_harness_event(root, "task_created", {"task_id": task_id, "title": title, "source": source})
     return task
 
 
@@ -2508,7 +2759,9 @@ def handle_telegram_update(
             "received_at": utc_now(),
             "action": "rejected_chat",
         }
-        return save_telegram_inbox_item(root, item)
+        path = save_telegram_inbox_item(root, item)
+        append_harness_event(root, "telegram_update_rejected", {"telegram_item_id": item_id, "chat_id": chat_id}, source="telegram")
+        return path
 
     text = str(message.get("text") or "")
     caption = str(message.get("caption") or "")
@@ -2570,7 +2823,22 @@ def handle_telegram_update(
         if reply:
             telegram_reply(config, chat_id, "Prompt recebido e salvo no inbox do Harness.")
 
-    return save_telegram_inbox_item(root, item)
+    path = save_telegram_inbox_item(root, item)
+    append_harness_event(
+        root,
+        "telegram_update_received",
+        {
+            "telegram_item_id": item_id,
+            "chat_id": chat_id,
+            "kind": kind,
+            "action": item.get("action"),
+            "created_task_id": item.get("created_task_id"),
+            "summary": f"Telegram recebeu {kind}: {item.get('action')}",
+        },
+        task_id=str(item.get("created_task_id") or ""),
+        source="telegram",
+    )
+    return path
 
 
 def command_task_create(args: argparse.Namespace) -> None:
@@ -2674,6 +2942,11 @@ def command_queue_add(args: argparse.Namespace) -> None:
     }
     queue.append(item)
     save_queue(root, queue)
+    append_harness_event(
+        root,
+        "queue_item_added",
+        {"queue_id": item["id"], "task_id": task_id, "title": title, "priority": args.priority},
+    )
     print(f"{item['id']} queued: {title}")
     if task_id:
         print(f"Task: {task_id}")
@@ -2707,6 +2980,11 @@ def command_queue_next(args: argparse.Namespace) -> None:
     if args.activate and item.get("status") == "queued":
         require_safe_branch(root, args, "queue next --activate")
         item = update_queue_item(root, item["id"], status="active", activated_at=utc_now())
+        append_harness_event(
+            root,
+            "queue_item_activated",
+            {"queue_id": item["id"], "task_id": item.get("task_id"), "title": item.get("title")},
+        )
     print(f"{item['id']} [{item.get('status')}] {item.get('title')}")
     if item.get("task_id"):
         print(f"Task: {item.get('task_id')}")
@@ -2731,6 +3009,11 @@ def command_queue_done(args: argparse.Namespace) -> None:
             update_task(root, item["task_id"], status="done")
         except SystemExit:
             pass
+    append_harness_event(
+        root,
+        "queue_item_closed",
+        {"queue_id": item["id"], "task_id": item.get("task_id"), "status": item.get("status"), "note": args.note or ""},
+    )
     print(f"{item['id']} -> {item['status']}")
 
 
@@ -3607,6 +3890,12 @@ def command_checkpoint_create(args: argparse.Namespace) -> None:
     else:
         path = create_checkpoint(root, args.task_id, args.summary or "manual", extra=payload)
     create_checkpoint(root, args.task_id, args.summary or "manual", run_dir=run_dir, extra=payload)
+    append_harness_event(
+        root,
+        "checkpoint_created",
+        {"task_id": args.task_id, "summary": args.summary or "", "next_steps": args.next or []},
+        run_dir=run_dir,
+    )
     print(f"Checkpoint escrito: {path}")
 
 
@@ -3894,10 +4183,30 @@ def collect_dashboard_state(root: Path) -> dict[str, Any]:
     }
 
 
+def load_hub_repo_registry(root: Path) -> list[str]:
+    payload = read_json(hub_repo_registry_path(root), {"repos": []})
+    repos = payload.get("repos") if isinstance(payload, dict) else []
+    return [str(item) for item in repos if str(item).strip()]
+
+
+def save_hub_repo_registry(root: Path, repos: list[str]) -> None:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for repo in repos:
+        path = Path(repo).expanduser().resolve()
+        key = normalize_path_key(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(str(path))
+    write_json(hub_repo_registry_path(root), {"repos": normalized, "updated_at": utc_now()})
+
+
 def hub_repo_paths(args: argparse.Namespace) -> list[Path]:
     raw_paths = list(getattr(args, "watch_repo", None) or [])
     if not raw_paths:
-        raw_paths = [args.repo]
+        root = root_from_args(args)
+        raw_paths = load_hub_repo_registry(root) or [args.repo]
     paths: list[Path] = []
     seen: set[str] = set()
     for raw in raw_paths:
@@ -4045,7 +4354,8 @@ def collect_hub_repo_state(root: Path, index: int = 0) -> dict[str, Any]:
     latest_run = latest_run_dir_or_none(root, active_task_id) if active_task_id else None
     role = hub_agent_role_for_phase(phase)
     agent_state = hub_agent_state_for_phase(phase, active_task_id)
-    agents = [
+    registry_agents = load_hub_agents(root)
+    agents = registry_agents or [
         {
             "id": f"{index}-{role}",
             "name": hub_agent_name_for_role(role),
@@ -4055,8 +4365,10 @@ def collect_hub_repo_state(root: Path, index: int = 0) -> dict[str, Any]:
             "task_title": active_task.get("title") if active_task else "",
             "phase": phase,
             "speech": hub_agent_speech(phase, active_task, queue, security_report),
+            "synthetic": True,
         }
     ]
+    events = read_recent_harness_events(root, limit=30)
     return {
         "index": index,
         "project": config.get("project_name") or root.name,
@@ -4081,6 +4393,7 @@ def collect_hub_repo_state(root: Path, index: int = 0) -> dict[str, Any]:
         "queue": queue[-10:],
         "security": security_report,
         "agents": agents,
+        "events": events,
     }
 
 
@@ -4266,6 +4579,21 @@ def wmux_send_text(payload: dict[str, Any]) -> dict[str, Any]:
     return {"ok": ok, "surface_id": surface_id, "result": results}
 
 
+def wmux_read_screen(payload: dict[str, Any]) -> dict[str, Any]:
+    surface_id = str(payload.get("surface_id") or payload.get("surfaceId") or os.environ.get("WMUX_SURFACE_ID", ""))
+    lines = int(payload.get("lines") or 80)
+    params: dict[str, Any] = {"lines": lines}
+    if surface_id:
+        params["surfaceId"] = surface_id
+    response = wmux_send_v2("surface.read_text", params)
+    if not response.get("ok"):
+        return {"ok": False, "error": response.get("error") or "Nao foi possivel ler a tela wmux."}
+    result = response.get("result") or {}
+    text = result.get("text") if isinstance(result, dict) else str(result or "")
+    note = result.get("note") if isinstance(result, dict) else ""
+    return {"ok": True, "surface_id": surface_id, "text": text or "", "note": note or ""}
+
+
 def wmux_new_terminal(payload: dict[str, Any]) -> dict[str, Any]:
     cwd = str(payload.get("cwd") or payload.get("root") or "")
     direction = str(payload.get("direction") or "down")
@@ -4294,7 +4622,7 @@ def wmux_new_terminal(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def collect_dashboard_hub_state(paths: list[Path]) -> dict[str, Any]:
+def collect_dashboard_hub_state(paths: list[Path], action_token: str = "") -> dict[str, Any]:
     repos = [collect_hub_repo_state(path, index) for index, path in enumerate(paths)]
     return {
         "generated_at": utc_now(),
@@ -4304,6 +4632,7 @@ def collect_dashboard_hub_state(paths: list[Path]) -> dict[str, Any]:
         "total_findings": sum(int(repo.get("counts", {}).get("security_findings") or 0) for repo in repos),
         "repos": repos,
         "wmux": collect_wmux_state(),
+        "action_token": action_token,
     }
 
 
@@ -4751,6 +5080,26 @@ def render_dashboard_hub_html(state: dict[str, Any], refresh_seconds: int = 3) -
       color: var(--ink);
       font-size: 12px;
     }}
+    .timeline {{
+      list-style: none;
+      padding: 0;
+      margin: 8px 0 0;
+      display: grid;
+      gap: 7px;
+      max-height: 220px;
+      overflow: auto;
+    }}
+    .timeline li {{
+      border-left: 4px solid var(--green);
+      padding-left: 8px;
+      font-size: 11px;
+      color: var(--ink);
+    }}
+    .event-time {{
+      color: var(--muted);
+      display: block;
+      margin-bottom: 2px;
+    }}
     .terminal-panel {{
       border-top: 3px solid var(--stone-4);
       margin-top: 12px;
@@ -4797,6 +5146,18 @@ def render_dashboard_hub_html(state: dict[str, Any], refresh_seconds: int = 3) -
       padding: 6px 0 6px 8px;
       margin-top: 6px;
       font-size: 11px;
+    }}
+    .terminal-screen {{
+      min-height: 120px;
+      max-height: 240px;
+      overflow: auto;
+      margin: 8px 0 0;
+      padding: 10px;
+      border: 3px solid #070504;
+      background: #050706;
+      color: #9df7ba;
+      font: 11px/1.45 Consolas, "Courier New", monospace;
+      white-space: pre-wrap;
     }}
     .status-ok {{ color: var(--green); }}
     .status-off {{ color: var(--red); }}
@@ -5019,10 +5380,24 @@ def render_dashboard_hub_html(state: dict[str, Any], refresh_seconds: int = 3) -
         `;
       }}).join("");
     }}
+    function eventTimeline(repo, selectedAgent) {{
+      const events = (repo.events || []).filter(event => {{
+        if (selectedAgent?.id && event.agent_id) return event.agent_id === selectedAgent.id;
+        if (selectedAgent?.task_id && event.task_id) return event.task_id === selectedAgent.task_id;
+        return true;
+      }}).slice(-12).reverse();
+      if (!events.length) return `<li>Nenhum evento registrado ainda.</li>`;
+      return events.map(event => {{
+        const payload = event.payload || {{}};
+        const text = payload.summary || payload.message || event.type || "evento";
+        return `<li><span class="event-time">${{esc(event.ts || "")}} - ${{esc(event.type || "")}}</span>${{esc(event.task_id || "")}} ${{esc(text)}}</li>`;
+      }}).join("");
+    }}
     async function postJson(path, payload) {{
+      const token = hubState.action_token || "";
       const response = await fetch(path, {{
         method: "POST",
-        headers: {{ "Content-Type": "application/json" }},
+        headers: {{ "Content-Type": "application/json", "X-Harness-Hub-Token": token }},
         body: JSON.stringify(payload || {{}})
       }});
       const data = await response.json().catch(() => ({{ ok: false, error: "Resposta invalida." }}));
@@ -5060,6 +5435,19 @@ def render_dashboard_hub_html(state: dict[str, Any], refresh_seconds: int = 3) -
           input.value = "";
         }});
       }}
+      const readButton = detail.querySelector("[data-wmux-read]");
+      const screen = detail.querySelector("#wmuxScreen");
+      if (readButton && screen) {{
+        readButton.addEventListener("click", async () => {{
+          screen.textContent = "Lendo terminal...";
+          try {{
+            const data = await postJson("/wmux/read-screen", {{ surface_id: selectedSurfaceId, lines: 80 }});
+            screen.textContent = data.text || data.note || "wmux nao retornou texto de tela.";
+          }} catch (error) {{
+            screen.textContent = error.message || String(error);
+          }}
+        }});
+      }}
     }}
     function renderDetail() {{
       const repo = (hubState.repos || [])[selectedIndex];
@@ -5086,6 +5474,9 @@ def render_dashboard_hub_html(state: dict[str, Any], refresh_seconds: int = 3) -
         Estado: ${{esc(selectedAgent.state || "-")}}<br>
         Fala: ${{esc(selectedAgent.speech || "-")}}<br>
         Task do agente: ${{esc(selectedAgent.task_id || "-")}} ${{esc(selectedAgent.task_title || "")}}<br>
+        Surface: ${{esc(selectedAgent.surface_id || "-")}}<br>
+        <br><strong>Timeline</strong>
+        <ul class="timeline">${{eventTimeline(repo, selectedAgent)}}</ul>
         <br><strong>Task ativa</strong><br>
         Task ativa: ${{esc(activeTask.task_id || "-")}} ${{esc(activeTask.title || "")}}<br>
         Run: ${{esc(repo.latest_run || "-")}}<br>
@@ -5102,7 +5493,9 @@ def render_dashboard_hub_html(state: dict[str, Any], refresh_seconds: int = 3) -
             <input class="terminal-input" id="wmuxSendText" placeholder="Mensagem ou comando para o terminal ativo">
             <div class="terminal-actions">
               <button class="terminal-button" data-wmux-send data-surface-id="${{esc(selectedSurfaceId)}}">Enviar para terminal ativo</button>
+              <button class="terminal-button" data-wmux-read>Ler tela</button>
             </div>
+            <pre class="terminal-screen" id="wmuxScreen">Clique em "Ler tela" para carregar o terminal ativo.</pre>
             <strong>Terminais</strong>
             ${{wmuxTerminalRows(wmux)}}
             <br><strong>Agents wmux</strong>
@@ -5232,6 +5625,52 @@ def command_dashboard_hub(args: argparse.Namespace) -> None:
         print(f"- {repo.get('project')} [{repo.get('phase')}]{suffix}: {repo.get('root')}")
 
 
+def command_dashboard_hub_add_repo(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    repos = load_hub_repo_registry(root)
+    added: list[str] = []
+    for raw in args.path:
+        repo = Path(raw).expanduser().resolve()
+        require_existing_root(repo)
+        key = normalize_path_key(repo)
+        if key not in {normalize_path_key(Path(item)) for item in repos}:
+            repos.append(str(repo))
+            added.append(str(repo))
+    save_hub_repo_registry(root, repos)
+    append_harness_event(root, "hub_repo_registry_updated", {"added": added, "repos": repos}, source="hub")
+    print(f"Repos no hub: {len(load_hub_repo_registry(root))}")
+    for repo in added:
+        print(f"- adicionado: {repo}")
+
+
+def command_dashboard_hub_remove_repo(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    remove = {normalize_path_key(Path(raw).expanduser().resolve()) for raw in args.path}
+    repos = [repo for repo in load_hub_repo_registry(root) if normalize_path_key(Path(repo)) not in remove]
+    save_hub_repo_registry(root, repos)
+    append_harness_event(root, "hub_repo_registry_updated", {"removed": list(remove), "repos": repos}, source="hub")
+    print(f"Repos no hub: {len(repos)}")
+
+
+def command_dashboard_hub_list_repos(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    repos = load_hub_repo_registry(root)
+    if args.json:
+        print(json.dumps({"repos": repos}, indent=2, ensure_ascii=False))
+        return
+    if not repos:
+        print("Nenhum repo registrado no hub.")
+        return
+    for repo in repos:
+        print(f"- {repo}")
+
+
 def command_dashboard_hub_state(args: argparse.Namespace) -> None:
     root = root_from_args(args)
     require_existing_root(root)
@@ -5243,6 +5682,128 @@ def command_dashboard_hub_state(args: argparse.Namespace) -> None:
     print(json.dumps(state, indent=2, ensure_ascii=False) if args.json else f"Hub state: {path}")
 
 
+def command_agent_register(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    task_title = ""
+    if args.task_id:
+        try:
+            task_title = str(find_task(root, args.task_id).get("title") or "")
+        except SystemExit:
+            task_title = ""
+    agent = upsert_agent(
+        root,
+        args.agent_id,
+        name=args.name or hub_agent_name_for_role(args.role),
+        role=args.role,
+        state=args.state,
+        task_id=args.task_id or "",
+        task_title=task_title,
+        phase=args.phase or args.role,
+        speech=args.speech or "",
+        run_dir=args.run_dir or "",
+        surface_id=args.surface_id or "",
+    )
+    append_harness_event(
+        root,
+        "agent_registered",
+        {"agent_id": args.agent_id, "task_id": args.task_id or "", "summary": agent.get("speech") or "Agent registrado."},
+        task_id=args.task_id,
+        agent_id=args.agent_id,
+        source="agent",
+    )
+    print(f"Agent registrado: {agent['id']} [{agent['state']}]")
+
+
+def command_agent_heartbeat(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    registry = load_agent_registry(root)
+    agents = [agent for agent in registry.get("agents", []) if isinstance(agent, dict)]
+    agent = next((item for item in agents if item.get("id") == args.agent_id), None)
+    if not agent:
+        raise SystemExit(f"Agent nao registrado: {args.agent_id}")
+    agent["heartbeat_at"] = utc_now()
+    agent["updated_at"] = agent["heartbeat_at"]
+    if args.state:
+        agent["state"] = args.state
+        agent["status"] = agent_status_from_state(args.state)
+    if args.speech:
+        agent["speech"] = args.speech
+    if args.surface_id:
+        agent["surface_id"] = args.surface_id
+    save_agent_registry(root, {"agents": agents, "updated_at": utc_now()})
+    append_harness_event(
+        root,
+        "agent_heartbeat",
+        {"agent_id": args.agent_id, "summary": args.speech or "Heartbeat recebido."},
+        task_id=str(agent.get("task_id") or ""),
+        agent_id=args.agent_id,
+        source="agent",
+    )
+    print(f"Heartbeat: {args.agent_id}")
+
+
+def command_agent_done(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    registry = load_agent_registry(root)
+    agents = [agent for agent in registry.get("agents", []) if isinstance(agent, dict)]
+    agent = next((item for item in agents if item.get("id") == args.agent_id), None)
+    if not agent:
+        raise SystemExit(f"Agent nao registrado: {args.agent_id}")
+    agent["state"] = args.state
+    agent["status"] = args.state
+    agent["speech"] = args.speech or agent.get("speech") or ""
+    agent["updated_at"] = utc_now()
+    agent["heartbeat_at"] = agent["updated_at"]
+    save_agent_registry(root, {"agents": agents, "updated_at": utc_now()})
+    append_harness_event(
+        root,
+        "agent_done",
+        {"agent_id": args.agent_id, "state": args.state, "summary": agent.get("speech") or "Agent finalizado."},
+        task_id=str(agent.get("task_id") or ""),
+        agent_id=args.agent_id,
+        source="agent",
+    )
+    print(f"Agent {args.agent_id} -> {args.state}")
+
+
+def command_agent_list(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    agents = load_agent_registry(root).get("agents", [])
+    if args.json:
+        print(json.dumps(agents, indent=2, ensure_ascii=False))
+        return
+    if not agents:
+        print("Nenhum agent registrado.")
+        return
+    for agent in agents:
+        print(f"- {agent.get('id')} [{agent.get('state')}] {agent.get('task_id') or '-'} - {agent.get('speech') or agent.get('name')}")
+
+
+def command_events_list(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    events = read_recent_harness_events(root, limit=args.limit, task_id=args.task_id)
+    if args.json:
+        print(json.dumps(events, indent=2, ensure_ascii=False))
+        return
+    if not events:
+        print("Nenhum evento registrado.")
+        return
+    for event in events:
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        summary = payload.get("summary") or payload.get("message") or event.get("type")
+        print(f"- {event.get('ts')} {event.get('type')} {event.get('task_id') or '-'}: {summary}")
+
+
 def command_dashboard_hub_serve(args: argparse.Namespace) -> None:
     import functools
     import http.server
@@ -5251,8 +5812,11 @@ def command_dashboard_hub_serve(args: argparse.Namespace) -> None:
     require_existing_root(root)
     require_init(root)
     paths = hub_repo_paths(args)
-    write_dashboard_hub(root, paths, args.refresh_seconds)
+    action_token = uuid.uuid4().hex
+    initial_state = collect_dashboard_hub_state(paths, action_token=action_token)
     directory = dashboard_hub_root(root)
+    write_text(directory / "index.html", render_dashboard_hub_html(initial_state, args.refresh_seconds))
+    write_json(directory / "hub-state.json", initial_state)
 
     class HubHandler(http.server.SimpleHTTPRequestHandler):
         def send_json(self, status: int, payload: dict[str, Any]) -> None:
@@ -5273,10 +5837,16 @@ def command_dashboard_hub_serve(args: argparse.Namespace) -> None:
                 return {}
             return json.loads(raw.decode("utf-8"))
 
+        def authorized(self, payload: dict[str, Any]) -> bool:
+            if self.client_address[0] not in {"127.0.0.1", "::1"}:
+                return False
+            supplied = self.headers.get("X-Harness-Hub-Token") or str(payload.get("action_token") or "")
+            return bool(action_token and supplied == action_token)
+
         def do_GET(self) -> None:  # noqa: N802 - stdlib hook
             request_path = urllib.parse.urlparse(self.path).path
             if request_path in {"/hub-state.json", "/state.json"}:
-                state = collect_dashboard_hub_state(paths)
+                state = collect_dashboard_hub_state(paths, action_token=action_token)
                 write_json(directory / "hub-state.json", state)
                 self.send_json(200, state)
                 return
@@ -5295,6 +5865,9 @@ def command_dashboard_hub_serve(args: argparse.Namespace) -> None:
             except json.JSONDecodeError as exc:
                 self.send_json(400, {"ok": False, "error": f"JSON invalido: {exc}"})
                 return
+            if not self.authorized(payload):
+                self.send_json(403, {"ok": False, "error": "Acao local nao autorizada."})
+                return
 
             if request_path == "/wmux/focus":
                 result = wmux_focus(payload)
@@ -5302,8 +5875,21 @@ def command_dashboard_hub_serve(args: argparse.Namespace) -> None:
                 result = wmux_send_text(payload)
             elif request_path == "/wmux/new-terminal":
                 result = wmux_new_terminal(payload)
+            elif request_path == "/wmux/read-screen":
+                result = wmux_read_screen(payload)
             else:
                 result = {"ok": False, "error": "Acao wmux desconhecida."}
+            append_harness_event(
+                root,
+                "hub_wmux_action",
+                {
+                    "path": request_path,
+                    "ok": bool(result.get("ok")),
+                    "surface_id": payload.get("surface_id") or result.get("surface_id"),
+                    "summary": f"Hub executou {request_path}: {'ok' if result.get('ok') else 'falha'}",
+                },
+                source="hub",
+            )
             self.send_json(200 if result.get("ok") else 400, result)
 
         def log_message(self, format: str, *values: Any) -> None:  # noqa: A002
@@ -6088,6 +6674,9 @@ def command_telegram_bridge(args: argparse.Namespace) -> None:
     bridge_state_path = telegram_root(root) / "bridge-state.json"
     bridge_state = read_json(bridge_state_path, {})
     update_offset = bridge_state.get("telegram_offset")
+    event_offset = bridge_state.get("event_offset")
+    if event_offset is None and not args.from_start and event_stream_path(root).exists():
+        event_offset = event_stream_path(root).stat().st_size
     targets = [str(item) for item in args.chat_id] if args.chat_id else [str(item) for item in telegram_config(config).get("chat_ids", [])]
     if not targets:
         raise SystemExit("Nenhum chat configurado. Use telegram configure --chat-id ou telegram bridge --chat-id.")
@@ -6096,6 +6685,25 @@ def command_telegram_bridge(args: argparse.Namespace) -> None:
     print(f"Destino Telegram: {', '.join(targets)}")
     print(f"Modo de envio: {args.send_mode}")
     while True:
+        if not args.no_harness_events:
+            harness_events, event_offset = read_new_harness_events(root, event_offset)
+            forwarded = 0
+            for event in harness_events:
+                if event.get("source") == "telegram":
+                    continue
+                telegram_send_message(config, telegram_message_from_harness_event(event), targets)
+                forwarded += 1
+            if forwarded:
+                print(f"Bridge enviou {forwarded} eventos Harness.")
+            write_json(
+                bridge_state_path,
+                {
+                    "telegram_offset": update_offset,
+                    "event_offset": event_offset,
+                    "updated_at": utc_now(),
+                },
+            )
+
         if not args.session_file and args.follow_latest:
             latest = latest_codex_session_file()
             if latest != session_path:
@@ -6150,7 +6758,7 @@ def command_telegram_bridge(args: argparse.Namespace) -> None:
                     print(f"Comando Harness via Telegram: {path}")
                     processed += 1
                 update_offset = max(update_offset or 0, update_id + 1)
-                write_json(bridge_state_path, {"telegram_offset": update_offset, "updated_at": utc_now()})
+                write_json(bridge_state_path, {"telegram_offset": update_offset, "event_offset": event_offset, "updated_at": utc_now()})
                 continue
 
             path = handle_telegram_update(
@@ -6219,7 +6827,7 @@ def command_telegram_bridge(args: argparse.Namespace) -> None:
                     )
             processed += 1
             update_offset = max(update_offset or 0, update_id + 1)
-            write_json(bridge_state_path, {"telegram_offset": update_offset, "updated_at": utc_now()})
+            write_json(bridge_state_path, {"telegram_offset": update_offset, "event_offset": event_offset, "updated_at": utc_now()})
 
         if processed:
             print(f"Bridge processou {processed} mensagens Telegram.")
@@ -6660,6 +7268,15 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard_hub.add_argument("--watch-repo", action="append", help="Repo Harness a monitorar; repetivel")
     dashboard_hub.add_argument("--refresh-seconds", type=int, default=3, help="Intervalo de refresh da UI")
     dashboard_hub.set_defaults(func=command_dashboard_hub)
+    dashboard_hub_add = dashboard_sub.add_parser("hub-add-repo", help="Registra repos fixos no hub")
+    dashboard_hub_add.add_argument("path", nargs="+")
+    dashboard_hub_add.set_defaults(func=command_dashboard_hub_add_repo)
+    dashboard_hub_remove = dashboard_sub.add_parser("hub-remove-repo", help="Remove repos fixos do hub")
+    dashboard_hub_remove.add_argument("path", nargs="+")
+    dashboard_hub_remove.set_defaults(func=command_dashboard_hub_remove_repo)
+    dashboard_hub_list = dashboard_sub.add_parser("hub-list-repos", help="Lista repos fixos do hub")
+    dashboard_hub_list.add_argument("--json", action="store_true")
+    dashboard_hub_list.set_defaults(func=command_dashboard_hub_list_repos)
     dashboard_hub_state = dashboard_sub.add_parser("hub-state", help="Atualiza JSON do hub multi-repo")
     dashboard_hub_state.add_argument("--watch-repo", action="append", help="Repo Harness a monitorar; repetivel")
     dashboard_hub_state.add_argument("--json", action="store_true", help="Imprime JSON")
@@ -6677,6 +7294,42 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard_serve.add_argument("--port", type=int, default=8765)
     dashboard_serve.add_argument("--once", action="store_true", help="Atende uma requisicao e encerra")
     dashboard_serve.set_defaults(func=command_dashboard_serve)
+
+    agent = sub.add_parser("agent", help="Registra agents reais para o hub")
+    agent_sub = agent.add_subparsers(dest="agent_command", required=True)
+    agent_register = agent_sub.add_parser("register", help="Registra ou atualiza um agent")
+    agent_register.add_argument("agent_id")
+    agent_register.add_argument("--name")
+    agent_register.add_argument("--role", default="operator", choices=["builder", "reviewer", "security", "reporter", "operator"])
+    agent_register.add_argument("--state", default="working", choices=["working", "idle", "blocked", "done"])
+    agent_register.add_argument("--task-id")
+    agent_register.add_argument("--phase")
+    agent_register.add_argument("--speech")
+    agent_register.add_argument("--run-dir")
+    agent_register.add_argument("--surface-id")
+    agent_register.set_defaults(func=command_agent_register)
+    agent_heartbeat = agent_sub.add_parser("heartbeat", help="Atualiza heartbeat e fala de um agent")
+    agent_heartbeat.add_argument("agent_id")
+    agent_heartbeat.add_argument("--state", choices=["working", "idle", "blocked", "done"])
+    agent_heartbeat.add_argument("--speech")
+    agent_heartbeat.add_argument("--surface-id")
+    agent_heartbeat.set_defaults(func=command_agent_heartbeat)
+    agent_done = agent_sub.add_parser("done", help="Marca agent como finalizado")
+    agent_done.add_argument("agent_id")
+    agent_done.add_argument("--state", default="done", choices=["done", "idle", "blocked"])
+    agent_done.add_argument("--speech")
+    agent_done.set_defaults(func=command_agent_done)
+    agent_list = agent_sub.add_parser("list", help="Lista agents registrados")
+    agent_list.add_argument("--json", action="store_true")
+    agent_list.set_defaults(func=command_agent_list)
+
+    events = sub.add_parser("events", help="Lista o stream local de eventos")
+    events_sub = events.add_subparsers(dest="events_command", required=True)
+    events_list = events_sub.add_parser("list", help="Lista eventos recentes")
+    events_list.add_argument("--task-id")
+    events_list.add_argument("--limit", type=int, default=40)
+    events_list.add_argument("--json", action="store_true")
+    events_list.set_defaults(func=command_events_list)
 
     status = sub.add_parser("status", help="Mostra estado do Harness")
     status.set_defaults(func=command_status)
@@ -6772,6 +7425,7 @@ def build_parser() -> argparse.ArgumentParser:
     telegram_bridge.add_argument("--poll-timeout", type=int, default=2, help="Tempo de long polling do Telegram")
     telegram_bridge.add_argument("--limit", type=int, default=10, help="Maximo de updates por chamada")
     telegram_bridge.add_argument("--chat-id", action="append", help="Chat alvo; por padrao usa telegram.chat_ids")
+    telegram_bridge.add_argument("--no-harness-events", action="store_true", help="Nao encaminha o stream .harness/events.jsonl")
     telegram_bridge.add_argument("--follow-latest", action="store_true", default=True, help="Segue a sessao Codex mais recente")
     telegram_bridge.add_argument("--send-mode", choices=["queue", "codex-exec"], default="queue", help="Como tratar mensagens comuns do Telegram")
     telegram_bridge.add_argument("--resume-last", action="store_true", help="Usa `codex exec resume --last` para envios ao Codex")
