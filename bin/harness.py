@@ -125,6 +125,7 @@ from harness_core.plugin_policy import (  # noqa: E402
     require_plugin_run_allowed,
     runnable_plugins,
 )
+from harness_core.plugin_registry import load_plugins, save_plugins  # noqa: E402
 from harness_core.queue_state import (  # noqa: E402
     active_queue_item,
     load_queue,
@@ -260,26 +261,6 @@ def task_budget(task: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
     if isinstance(task.get("budget"), dict):
         budget.update(task["budget"])
     return budget
-
-
-def load_plugins(root: Path) -> list[dict[str, Any]]:
-    payload = read_json(plugin_registry_path(root), {"plugins": []})
-    if isinstance(payload, dict):
-        return payload.get("plugins", [])
-    if isinstance(payload, list):
-        return payload
-    return []
-
-
-def save_plugins(root: Path, plugins: list[dict[str, Any]]) -> None:
-    write_json(plugin_registry_path(root), {"plugins": plugins})
-
-
-def plugin_by_name(root: Path, name: str) -> dict[str, Any]:
-    for plugin in load_plugins(root):
-        if plugin.get("name") == name:
-            return plugin
-    raise SystemExit(f"Plugin nao encontrado: {name}")
 
 
 def load_artifacts(root: Path) -> list[dict[str, Any]]:
