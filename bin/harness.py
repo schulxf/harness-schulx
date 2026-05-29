@@ -96,6 +96,12 @@ from harness_core.events import (  # noqa: E402
     read_recent_harness_events,
     telegram_message_from_harness_event,
 )
+from harness_core.git_helpers import (  # noqa: E402
+    current_git_branch,
+    git_output,
+    is_git_repo,
+    protected_branches,
+)
 from harness_core.http import http_json_post, http_multipart_post  # noqa: E402
 from harness_core.memory import load_memory, render_memory_context, save_memory  # noqa: E402
 from harness_core.paths import (  # noqa: E402
@@ -809,84 +815,6 @@ def openai_describe_image(path: Path, config: dict[str, Any]) -> str:
         timeout=120,
     )
     return openai_extract_output_text(response)
-
-
-def discover_git_dir(root: Path) -> Path | None:
-    resolved = root.resolve(strict=False)
-    for path in [resolved, *resolved.parents]:
-        dot_git = path / ".git"
-        if dot_git.is_dir():
-            return dot_git
-        if dot_git.is_file():
-            try:
-                content = read_text(dot_git).strip()
-            except OSError:
-                continue
-            prefix = "gitdir:"
-            if content.lower().startswith(prefix):
-                git_dir = content[len(prefix) :].strip()
-                candidate = Path(git_dir)
-                if not candidate.is_absolute():
-                    candidate = path / candidate
-                return candidate.resolve(strict=False)
-    return None
-
-
-def is_git_repo(root: Path) -> bool:
-    if not discover_git_dir(root):
-        return False
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "--is-inside-work-tree"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-    except FileNotFoundError:
-        return False
-    return result.returncode == 0 and result.stdout.strip() == "true"
-
-
-def current_git_branch(root: Path) -> str | None:
-    git_dir = discover_git_dir(root)
-    if git_dir:
-        head_path = git_dir / "HEAD"
-        try:
-            head = read_text(head_path).strip()
-        except OSError:
-            head = ""
-        if head.startswith("ref:"):
-            ref = head.removeprefix("ref:").strip()
-            heads_prefix = "refs/heads/"
-            return ref.removeprefix(heads_prefix) or None
-        if head:
-            return head[:12]
-    if not is_git_repo(root):
-        return None
-    branch = git_output(root, ["branch", "--show-current"]).strip()
-    return branch or None
-
-
-def git_output(root: Path, args: list[str]) -> str:
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(root), *args],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-    except FileNotFoundError:
-        return "git nao esta instalado ou nao esta no PATH."
-    if result.returncode != 0:
-        return result.stderr.strip()
-    return result.stdout.strip()
-
-
-def protected_branches(root: Path) -> list[str]:
-    config = read_json(config_path(root), {}) if config_path(root).exists() else {}
-    return config.get("protected_branches", DEFAULT_PROTECTED_BRANCHES)
 
 
 def require_safe_branch(root: Path, args: argparse.Namespace, operation: str) -> None:
