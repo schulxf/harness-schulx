@@ -184,6 +184,13 @@ from harness_core.storage import (  # noqa: E402
     write_json,
     write_text,
 )
+from harness_core.task_store import (  # noqa: E402
+    find_task,
+    load_tasks,
+    next_task_id,
+    save_tasks,
+    update_task,
+)
 from harness_core.telegram_policy import (  # noqa: E402
     telegram_chat_allowed,
     telegram_remote_execution_allowed,
@@ -228,41 +235,6 @@ def require_init(root: Path) -> None:
 def load_config(root: Path) -> dict[str, Any]:
     require_init(root)
     return read_json(config_path(root), {})
-
-
-def load_tasks(root: Path) -> list[TaskRecord]:
-    return read_json(tasks_index_path(root), [])
-
-
-def save_tasks(root: Path, tasks: list[TaskRecord]) -> None:
-    write_json(tasks_index_path(root), tasks)
-
-
-def find_task(root: Path, task_id: str) -> TaskRecord:
-    for task in load_tasks(root):
-        if task["task_id"] == task_id:
-            return task
-    raise SystemExit(f"Task nao encontrada: {task_id}")
-
-
-def update_task(root: Path, task_id: str, **updates: Any) -> None:
-    tasks = load_tasks(root)
-    for task in tasks:
-        if task["task_id"] == task_id:
-            task.update(updates)
-            task["updated_at"] = utc_now()
-            save_tasks(root, tasks)
-            return
-    raise SystemExit(f"Task nao encontrada: {task_id}")
-
-
-def next_task_id(root: Path) -> str:
-    numbers = []
-    for task in load_tasks(root):
-        match = re.match(r"TASK-(\d+)$", task["task_id"])
-        if match:
-            numbers.append(int(match.group(1)))
-    return f"TASK-{(max(numbers) + 1) if numbers else 1:03d}"
 
 
 def queue_item_id(task_id: str) -> str:
