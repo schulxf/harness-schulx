@@ -312,14 +312,23 @@ def test_dashboard_hub_generation_for_multiple_repos(tmp_path):
 
     hub = repo_a / ".harness" / "dashboard" / "hub" / "index.html"
     state_path = repo_a / ".harness" / "dashboard" / "hub" / "hub-state.json"
+    css_path = repo_a / ".harness" / "dashboard" / "hub" / "hub.css"
+    js_path = repo_a / ".harness" / "dashboard" / "hub" / "hub.js"
     assert hub.is_file()
     assert state_path.is_file()
+    assert css_path.is_file()
+    assert js_path.is_file()
     html = hub.read_text(encoding="utf-8")
+    css = css_path.read_text(encoding="utf-8")
+    js = js_path.read_text(encoding="utf-8")
     state = read_json(state_path)
     assert "Harness Hub" in html
-    assert "room" in html
-    assert "agent-token" in html
-    assert "speech-bubble" in html
+    assert 'href="hub.css"' in html
+    assert 'src="hub.js"' in html
+    assert 'id="hub-bootstrap"' in html
+    assert "room" in js
+    assert "agent-token" in js
+    assert "speech-bubble" in css
     assert state["repo_count"] == 2
     assert {repo["project"] for repo in state["repos"]} == {"test"}
     assert state["total_tasks"] == 2

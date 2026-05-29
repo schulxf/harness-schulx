@@ -155,6 +155,50 @@ def test_telegram_allowlist_fails_closed_and_remote_execution_is_explicit():
     )
 
 
+def test_telegram_update_context_and_offset_helpers():
+    context = harness.telegram_update_context(
+        {
+            "update_id": 41,
+            "message": {
+                "chat": {"id": 123},
+                "text": "  /codex oi  ",
+            },
+        }
+    )
+
+    assert context["update_id"] == 41
+    assert context["chat_id"] == "123"
+    assert context["text"] == "  /codex oi  "
+    assert context["stripped"] == "/codex oi"
+    assert harness.advance_telegram_offset(None, 41) == 42
+    assert harness.advance_telegram_offset(100, 41) == 100
+
+
+def test_telegram_poll_updates_builds_standard_payload(monkeypatch):
+    calls = []
+
+    def fake_api_call(token, method, payload, timeout):
+        calls.append((token, method, payload, timeout))
+        return [{"update_id": 1}]
+
+    monkeypatch.setattr(harness, "telegram_api_call", fake_api_call)
+
+    assert harness.telegram_poll_updates("tok", timeout=5, limit=2, offset=9) == [{"update_id": 1}]
+    assert calls == [
+        (
+            "tok",
+            "getUpdates",
+            {
+                "timeout": 5,
+                "limit": 2,
+                "allowed_updates": ["message", "edited_message"],
+                "offset": 9,
+            },
+            20,
+        )
+    ]
+
+
 def test_hub_action_auth_requires_loopback_and_token():
     assert harness.hub_local_request_allowed("127.0.0.1") is True
     assert harness.hub_local_request_allowed("192.168.0.10") is False
@@ -169,6 +213,22 @@ def test_read_jsonl_tail_reads_only_recent_records(tmp_path):
         harness.append_jsonl(path, {"index": index})
 
     assert [item["index"] for item in harness.read_jsonl_tail(path, 3)] == [17, 18, 19]
+
+
+def test_render_dashboard_hub_html_uses_static_assets_and_safe_bootstrap_json():
+    html = harness.render_dashboard_hub_html(
+        {"repos": [{"project": "</script><!--"}], "action_token": "tok"},
+        refresh_seconds=0,
+    )
+
+    assert 'href="hub.css"' in html
+    assert 'src="hub.js"' in html
+    assert 'id="hub-bootstrap"' in html
+    assert 'data-refresh-ms="1000"' in html
+    assert "<\\/script>" in html
+    assert "<\\!--" in html
+    assert "<style>" not in html
+    assert "function render()" not in html
 
 
 def test_render_plain_summary_is_nontechnical():

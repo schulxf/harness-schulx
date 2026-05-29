@@ -55,6 +55,10 @@ from harness_core.config import (  # noqa: E402
     review_policy,
     telegram_config,
 )
+from harness_core.dashboard_hub import (  # noqa: E402,F401
+    render_dashboard_hub_html as render_dashboard_hub_html,
+)
+from harness_core.dashboard_hub import write_dashboard_hub_files  # noqa: E402
 from harness_core.defaults import (  # noqa: E402
     CONTEXT_KINDS,
     DEFAULT_EVALUATION_POLICY,
@@ -121,6 +125,10 @@ from harness_core.storage import (  # noqa: E402
     read_text,
     write_json,
     write_text,
+)
+from harness_core.telegram_policy import (  # noqa: E402
+    telegram_chat_allowed,
+    telegram_remote_execution_allowed,
 )
 
 VERSION = "0.3.0"
@@ -1756,22 +1764,6 @@ def save_telegram_inbox_item(root: Path, item: dict[str, Any]) -> Path:
     write_json(path, item)
     append_jsonl(inbox / "index.jsonl", {"ts": utc_now(), "id": item_id, "path": str(path)})
     return path
-
-
-def telegram_chat_allowed(config: dict[str, Any], chat_id: str) -> bool:
-    tconfig = telegram_config(config)
-    allowed = [str(item) for item in tconfig.get("allowed_chat_ids", [])]
-    if not allowed:
-        allowed = [str(item) for item in tconfig.get("chat_ids", [])]
-    return bool(allowed) and str(chat_id) in set(allowed)
-
-
-def telegram_remote_execution_allowed(config: dict[str, Any]) -> bool:
-    tconfig = telegram_config(config)
-    allowed = [str(item) for item in tconfig.get("allowed_chat_ids", [])] or [
-        str(item) for item in tconfig.get("chat_ids", [])
-    ]
-    return config_bool(tconfig.get("allow_remote_execution"), False) and bool(allowed)
 
 
 def telegram_file_extension(file_path: str, fallback: str) -> str:
@@ -4357,909 +4349,10 @@ def collect_dashboard_hub_state(
     }
 
 
-def render_dashboard_hub_html(state: dict[str, Any], refresh_seconds: int = 3) -> str:
-    initial_state = (
-        json.dumps(state, ensure_ascii=False)
-        .replace("</", "<\\/")
-        .replace("<!--", "<\\!--")
-    )
-    return f"""<!doctype html>
-<html lang="pt-BR">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Harness Hub</title>
-  <style>
-    :root {{
-      color-scheme: dark;
-      --stone-0: #0b0908;
-      --stone-1: #15100d;
-      --stone-2: #241a14;
-      --stone-3: #3b2a1e;
-      --stone-4: #68462e;
-      --wood-1: #3a2113;
-      --wood-2: #6f4328;
-      --brass: #c28b43;
-      --blue: #21a7ff;
-      --green: #4ade80;
-      --red: #ff5b5b;
-      --amber: #f6b74a;
-      --violet: #a987ff;
-      --ink: #f3ead7;
-      --muted: #b59f7b;
-      font-family: "Trebuchet MS", Arial, sans-serif;
-      image-rendering: pixelated;
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
-      margin: 0;
-      min-height: 100vh;
-      background:
-        linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px),
-        linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px),
-        var(--stone-0);
-      background-size: 16px 16px;
-      color: var(--ink);
-      letter-spacing: 0;
-      overflow-x: hidden;
-    }}
-    header {{
-      min-height: 72px;
-      padding: 14px 18px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 16px;
-      border-bottom: 4px solid #070504;
-      background: var(--stone-2);
-      box-shadow: inset 0 -4px 0 var(--stone-4);
-    }}
-    h1 {{
-      margin: 0;
-      font-size: 24px;
-      line-height: 1.1;
-      text-transform: uppercase;
-    }}
-    .subhead {{
-      margin-top: 4px;
-      color: var(--muted);
-      font-size: 13px;
-    }}
-    .hud {{
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      justify-content: flex-end;
-    }}
-    .chip {{
-      border: 2px solid var(--stone-4);
-      background: #120d0a;
-      color: var(--ink);
-      min-height: 34px;
-      padding: 7px 10px;
-      box-shadow: inset -2px -2px 0 #050403, inset 2px 2px 0 #3b2a1e;
-      font-size: 12px;
-    }}
-    .shell {{
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) 360px;
-      min-height: calc(100vh - 72px);
-    }}
-    .world-wrap {{
-      padding: 18px;
-      overflow: auto;
-      background:
-        radial-gradient(circle at 50% 50%, rgba(33,167,255,.08), transparent 34%),
-        #050403;
-    }}
-    .world {{
-      position: relative;
-      min-width: 1040px;
-      min-height: 680px;
-      border: 8px solid #070504;
-      background:
-        linear-gradient(90deg, rgba(0,0,0,.18) 1px, transparent 1px),
-        linear-gradient(rgba(0,0,0,.18) 1px, transparent 1px),
-        var(--wood-1);
-      background-size: 24px 24px;
-      box-shadow: inset 0 0 0 5px var(--stone-4), 0 0 0 4px #000;
-    }}
-    .hall {{
-      position: absolute;
-      left: 31%;
-      top: 14%;
-      width: 38%;
-      height: 72%;
-      border: 6px solid var(--stone-4);
-      background:
-        linear-gradient(90deg, rgba(246,183,74,.14) 2px, transparent 2px),
-        linear-gradient(rgba(246,183,74,.08) 2px, transparent 2px),
-        #2b1a10;
-      background-size: 34px 34px;
-      box-shadow: inset 0 0 0 4px #120d0a;
-    }}
-    .core {{
-      position: absolute;
-      left: 50%;
-      top: 50%;
-      width: 112px;
-      height: 112px;
-      transform: translate(-50%, -50%);
-      border: 5px solid var(--brass);
-      background: #09131b;
-      box-shadow: inset 0 0 0 8px #12304a, 0 0 24px rgba(33,167,255,.45);
-    }}
-    .core::before {{
-      content: "";
-      position: absolute;
-      left: 29px;
-      top: 29px;
-      width: 44px;
-      height: 44px;
-      border: 4px solid var(--blue);
-      background: #064c7a;
-      animation: pulse 1.8s steps(4) infinite;
-    }}
-    .room {{
-      position: absolute;
-      width: 300px;
-      height: 210px;
-      border: 7px solid #1b100a;
-      background:
-        linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px),
-        linear-gradient(rgba(255,255,255,.03) 1px, transparent 1px),
-        var(--stone-2);
-      background-size: 18px 18px;
-      box-shadow:
-        inset 0 0 0 4px var(--stone-4),
-        inset 0 -10px 0 rgba(0,0,0,.22),
-        0 0 0 4px #070504;
-      cursor: pointer;
-    }}
-    .room[data-phase="build"] {{ --phase: var(--blue); }}
-    .room[data-phase="queue"] {{ --phase: var(--amber); }}
-    .room[data-phase="review"] {{ --phase: var(--violet); }}
-    .room[data-phase="security"] {{ --phase: var(--red); }}
-    .room[data-phase="report"] {{ --phase: var(--green); }}
-    .room[data-phase="idle"] {{ --phase: var(--muted); }}
-    .room[data-phase="offline"] {{ --phase: #666; }}
-    .room::before {{
-      content: "";
-      position: absolute;
-      inset: 10px;
-      border: 3px solid var(--phase, var(--muted));
-      opacity: .75;
-      pointer-events: none;
-    }}
-    .room-title {{
-      position: absolute;
-      left: 17px;
-      top: 14px;
-      right: 17px;
-      font-size: 14px;
-      font-weight: 700;
-      text-transform: uppercase;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }}
-    .room-meta {{
-      position: absolute;
-      left: 18px;
-      top: 36px;
-      color: var(--muted);
-      font-size: 11px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      right: 18px;
-    }}
-    .console {{
-      position: absolute;
-      left: 22px;
-      bottom: 24px;
-      width: 108px;
-      height: 58px;
-      background: #130f0c;
-      border: 4px solid var(--wood-2);
-      box-shadow: inset 0 0 0 3px #050403;
-    }}
-    .console::before {{
-      content: "";
-      position: absolute;
-      left: 12px;
-      top: 10px;
-      width: 72px;
-      height: 18px;
-      background: var(--phase, var(--blue));
-      box-shadow: 0 28px 0 #2d1d12;
-      opacity: .9;
-    }}
-    .station {{
-      position: absolute;
-      right: 26px;
-      bottom: 28px;
-      width: 92px;
-      height: 72px;
-      border: 4px solid var(--brass);
-      background: #0a1116;
-      box-shadow: inset 0 0 0 5px #172a37;
-    }}
-    .station::before {{
-      content: "";
-      position: absolute;
-      left: 25px;
-      top: 18px;
-      width: 32px;
-      height: 32px;
-      background: var(--phase, var(--blue));
-      box-shadow: 0 0 16px var(--phase, var(--blue));
-      animation: pulse 2.4s steps(4) infinite;
-    }}
-    .metric-line {{
-      position: absolute;
-      left: 18px;
-      right: 18px;
-      bottom: 100px;
-      display: flex;
-      gap: 6px;
-      flex-wrap: wrap;
-    }}
-    .mini {{
-      min-width: 48px;
-      padding: 5px 6px;
-      border: 2px solid #4b3321;
-      background: #0f0b09;
-      font-size: 10px;
-      color: var(--ink);
-    }}
-    .agent-token {{
-      position: absolute;
-      width: 92px;
-      height: 106px;
-      border: 0;
-      background: transparent;
-      color: inherit;
-      padding: 0;
-      cursor: pointer;
-      z-index: 4;
-      font: inherit;
-    }}
-    .agent-token:focus {{
-      outline: 3px solid var(--blue);
-      outline-offset: 4px;
-    }}
-    .agent-token[data-state="idle"] {{
-      animation: idle-walk 5.6s steps(8) infinite;
-    }}
-    .agent-token[data-state="working"] {{
-      animation: working-bob 1.05s steps(3) infinite;
-    }}
-    .speech-bubble {{
-      position: absolute;
-      left: -26px;
-      bottom: 68px;
-      width: 146px;
-      min-height: 42px;
-      padding: 7px 8px;
-      border: 3px solid #070504;
-      background: #f1dfb5;
-      color: #1b120d;
-      box-shadow: 3px 3px 0 #070504;
-      font-size: 10px;
-      line-height: 1.18;
-      text-align: left;
-    }}
-    .speech-bubble::after {{
-      content: "";
-      position: absolute;
-      left: 42px;
-      bottom: -11px;
-      width: 14px;
-      height: 14px;
-      background: #f1dfb5;
-      border-right: 3px solid #070504;
-      border-bottom: 3px solid #070504;
-      transform: rotate(45deg);
-    }}
-    .agent-sprite {{
-      position: absolute;
-      left: 28px;
-      bottom: 6px;
-      width: 38px;
-      height: 56px;
-      filter: drop-shadow(0 0 8px var(--phase, var(--blue)));
-    }}
-    .agent-head {{
-      position: absolute;
-      left: 10px;
-      top: 0;
-      width: 18px;
-      height: 17px;
-      background: #f0c99a;
-      border: 3px solid #070504;
-      box-shadow: inset 0 -4px 0 #b77d52;
-    }}
-    .agent-head::before {{
-      content: "";
-      position: absolute;
-      left: 3px;
-      top: 5px;
-      width: 3px;
-      height: 3px;
-      background: #070504;
-      box-shadow: 8px 0 0 #070504;
-    }}
-    .agent-body {{
-      position: absolute;
-      left: 6px;
-      top: 18px;
-      width: 26px;
-      height: 25px;
-      background: var(--phase, var(--blue));
-      border: 3px solid #070504;
-      box-shadow: inset 0 -6px 0 rgba(0,0,0,.28);
-    }}
-    .agent-body::before,
-    .agent-body::after {{
-      content: "";
-      position: absolute;
-      top: 5px;
-      width: 8px;
-      height: 16px;
-      background: #2d1c13;
-      border: 3px solid #070504;
-    }}
-    .agent-body::before {{ left: -12px; }}
-    .agent-body::after {{ right: -12px; }}
-    .agent-legs {{
-      position: absolute;
-      left: 9px;
-      top: 42px;
-      width: 8px;
-      height: 13px;
-      background: #1b2431;
-      border: 3px solid #070504;
-      box-shadow: 12px 0 0 #1b2431, 12px 0 0 3px #070504;
-    }}
-    .agent-token[data-state="idle"] .agent-legs {{
-      animation: leg-walk .7s steps(2) infinite;
-    }}
-    .agent-token[data-state="working"] .agent-body::before {{
-      animation: arm-type .5s steps(2) infinite;
-    }}
-    .agent-shadow {{
-      position: absolute;
-      left: 25px;
-      bottom: 0;
-      width: 44px;
-      height: 10px;
-      background: rgba(0,0,0,.35);
-    }}
-    .agent-token[data-role="security"] .agent-body {{ background: var(--red); }}
-    .agent-token[data-role="reviewer"] .agent-body {{ background: var(--violet); }}
-    .agent-token[data-role="reporter"] .agent-body {{ background: var(--green); }}
-    .agent-token[data-role="operator"] .agent-body {{ background: var(--amber); }}
-    .path {{
-      position: absolute;
-      height: 6px;
-      background: rgba(194,139,67,.45);
-      box-shadow: 0 0 0 2px rgba(20,12,8,.8);
-      transform-origin: left center;
-    }}
-    aside {{
-      border-left: 5px solid #070504;
-      background: #100c0a;
-      min-width: 0;
-      padding: 16px;
-      overflow: auto;
-    }}
-    .panel {{
-      border: 4px solid var(--stone-4);
-      background: #18110d;
-      padding: 14px;
-      box-shadow: inset -3px -3px 0 #080504, inset 3px 3px 0 #3b2a1e;
-      margin-bottom: 14px;
-    }}
-    h2 {{
-      margin: 0 0 10px;
-      font-size: 15px;
-      text-transform: uppercase;
-    }}
-    .repo-list {{
-      display: grid;
-      gap: 8px;
-    }}
-    button.repo-button {{
-      width: 100%;
-      min-height: 44px;
-      text-align: left;
-      border: 3px solid var(--stone-4);
-      background: #0d0907;
-      color: var(--ink);
-      padding: 8px;
-      cursor: pointer;
-      font: inherit;
-      box-shadow: inset -2px -2px 0 #050403;
-    }}
-    button.repo-button:focus {{
-      outline: 3px solid var(--blue);
-      outline-offset: 2px;
-    }}
-    .detail {{
-      color: var(--muted);
-      font-size: 12px;
-      line-height: 1.45;
-      overflow-wrap: anywhere;
-    }}
-    .task-list {{
-      margin: 8px 0 0;
-      padding: 0;
-      list-style: none;
-      display: grid;
-      gap: 7px;
-    }}
-    .task-list li {{
-      border-left: 4px solid var(--brass);
-      padding-left: 8px;
-      color: var(--ink);
-      font-size: 12px;
-    }}
-    .timeline {{
-      list-style: none;
-      padding: 0;
-      margin: 8px 0 0;
-      display: grid;
-      gap: 7px;
-      max-height: 220px;
-      overflow: auto;
-    }}
-    .timeline li {{
-      border-left: 4px solid var(--green);
-      padding-left: 8px;
-      font-size: 11px;
-      color: var(--ink);
-    }}
-    .event-time {{
-      color: var(--muted);
-      display: block;
-      margin-bottom: 2px;
-    }}
-    .terminal-panel {{
-      border-top: 3px solid var(--stone-4);
-      margin-top: 12px;
-      padding-top: 10px;
-    }}
-    .terminal-actions {{
-      display: flex;
-      flex-wrap: wrap;
-      gap: 7px;
-      margin: 8px 0;
-    }}
-    .terminal-button {{
-      border: 3px solid #070504;
-      background: #24313b;
-      color: var(--ink);
-      min-height: 34px;
-      padding: 6px 8px;
-      cursor: pointer;
-      font: inherit;
-      font-size: 11px;
-      box-shadow: 2px 2px 0 #050403;
-    }}
-    .terminal-button:disabled {{
-      opacity: .45;
-      cursor: not-allowed;
-    }}
-    .terminal-input {{
-      width: 100%;
-      min-height: 36px;
-      border: 3px solid #070504;
-      background: #090706;
-      color: var(--ink);
-      padding: 7px;
-      font: inherit;
-      font-size: 12px;
-      box-sizing: border-box;
-    }}
-    .terminal-row {{
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 7px;
-      align-items: center;
-      border-left: 4px solid var(--blue);
-      padding: 6px 0 6px 8px;
-      margin-top: 6px;
-      font-size: 11px;
-    }}
-    .terminal-screen {{
-      min-height: 120px;
-      max-height: 240px;
-      overflow: auto;
-      margin: 8px 0 0;
-      padding: 10px;
-      border: 3px solid #070504;
-      background: #050706;
-      color: #9df7ba;
-      font: 11px/1.45 Consolas, "Courier New", monospace;
-      white-space: pre-wrap;
-    }}
-    .status-ok {{ color: var(--green); }}
-    .status-off {{ color: var(--red); }}
-    @keyframes pulse {{
-      0%, 100% {{ opacity: .7; transform: scale(1); }}
-      50% {{ opacity: 1; transform: scale(1.14); }}
-    }}
-    @keyframes idle-walk {{
-      0% {{ transform: translate(0, 0); }}
-      20% {{ transform: translate(28px, 0); }}
-      40% {{ transform: translate(28px, 28px); }}
-      60% {{ transform: translate(-6px, 28px); }}
-      80% {{ transform: translate(-6px, 0); }}
-      100% {{ transform: translate(0, 0); }}
-    }}
-    @keyframes working-bob {{
-      0%, 100% {{ transform: translateY(0); }}
-      50% {{ transform: translateY(-4px); }}
-    }}
-    @keyframes leg-walk {{
-      0% {{ transform: translateX(0); }}
-      100% {{ transform: translateX(4px); }}
-    }}
-    @keyframes arm-type {{
-      0% {{ transform: translateY(0); }}
-      100% {{ transform: translateY(4px); }}
-    }}
-    @keyframes patrol {{
-      0% {{ transform: translate(0, 0); }}
-      25% {{ transform: translate(24px, 0); }}
-      50% {{ transform: translate(24px, 24px); }}
-      75% {{ transform: translate(0, 24px); }}
-      100% {{ transform: translate(0, 0); }}
-    }}
-    @media (max-width: 900px) {{
-      .shell {{ grid-template-columns: 1fr; }}
-      aside {{ border-left: 0; border-top: 5px solid #070504; }}
-      .world {{ min-width: 760px; min-height: 620px; }}
-    }}
-  </style>
-</head>
-<body>
-  <header>
-    <div>
-      <h1>Harness Hub</h1>
-      <div class="subhead" id="generated">Mapa operacional local</div>
-    </div>
-    <div class="hud" aria-label="Resumo do hub">
-      <div class="chip" id="repoCount">Repos: 0</div>
-      <div class="chip" id="activeCount">Ativos: 0</div>
-      <div class="chip" id="taskCount">Tasks: 0</div>
-      <div class="chip" id="findingCount">Findings: 0</div>
-    </div>
-  </header>
-  <div class="shell">
-    <main class="world-wrap" aria-label="Mapa pixelado do Harness">
-      <div class="world" id="world">
-        <div class="hall"></div>
-        <div class="core" title="Hub core"></div>
-      </div>
-    </main>
-    <aside>
-      <section class="panel">
-        <h2>Projetos</h2>
-        <div class="repo-list" id="repoList"></div>
-      </section>
-      <section class="panel">
-        <h2>Inspecao</h2>
-        <div class="detail" id="detail">Selecione uma sala no mapa.</div>
-      </section>
-    </aside>
-  </div>
-  <script>
-    const initialState = {initial_state};
-    const refreshMs = {max(refresh_seconds, 1) * 1000};
-    let hubState = initialState;
-    let selectedIndex = 0;
-    let selectedAgentId = "";
-    const roomSlots = [
-      [32, 36], [708, 36], [32, 418], [708, 418],
-      [370, 36], [370, 418], [32, 226], [708, 226]
-    ];
-    const phaseLabels = {{
-      queue: "Fila", build: "Implementacao", review: "Revisao",
-      security: "Security", report: "Relatorio", idle: "Ocioso", offline: "Offline"
-    }};
-    function esc(value) {{
-      return String(value ?? "").replace(/[&<>"']/g, char => ({{
-        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
-      }}[char]));
-    }}
-    function roomPosition(index) {{
-      if (index < roomSlots.length) return roomSlots[index];
-      const col = index % 3;
-      const row = Math.floor(index / 3);
-      return [32 + col * 338, 650 + row * 240];
-    }}
-    function agentPosition(agent, agentIndex) {{
-      const phase = agent.phase || "idle";
-      if (agent.state === "idle") return [112 + agentIndex * 28, 72 + (agentIndex % 2) * 16];
-      if (phase === "review" || phase === "security") return [172, 92];
-      if (phase === "report" || phase === "queue") return [74, 92];
-      return [168, 92];
-    }}
-    function renderAgent(agent, agentIndex, repoIndex) {{
-      const [left, top] = agentPosition(agent, agentIndex);
-      const button = document.createElement("button");
-      button.className = "agent-token";
-      button.dataset.role = agent.role || "operator";
-      button.dataset.state = agent.state || "idle";
-      button.dataset.agentId = agent.id || "";
-      button.style.left = left + "px";
-      button.style.top = top + "px";
-      button.style.animationDelay = (agentIndex * -0.45) + "s";
-      button.title = (agent.name || "Agent") + (agent.task_id ? " - " + agent.task_id : "");
-      button.setAttribute("aria-label", button.title);
-      button.innerHTML = `
-        <div class="speech-bubble">${{esc(agent.speech || "Aguardando instrucao.")}}</div>
-        <div class="agent-shadow"></div>
-        <div class="agent-sprite" aria-hidden="true">
-          <div class="agent-head"></div>
-          <div class="agent-body"></div>
-          <div class="agent-legs"></div>
-        </div>
-      `;
-      button.addEventListener("click", event => {{
-        event.stopPropagation();
-        selectedIndex = repoIndex;
-        selectedAgentId = agent.id || "";
-        renderDetail();
-      }});
-      return button;
-    }}
-    function render() {{
-      document.getElementById("generated").textContent = "Atualizado " + (hubState.generated_at || "-");
-      document.getElementById("repoCount").textContent = "Repos: " + (hubState.repo_count || 0);
-      document.getElementById("activeCount").textContent = "Ativos: " + (hubState.active_repos || 0);
-      document.getElementById("taskCount").textContent = "Tasks: " + (hubState.total_tasks || 0);
-      document.getElementById("findingCount").textContent = "Findings: " + (hubState.total_findings || 0);
-      const world = document.getElementById("world");
-      world.querySelectorAll(".room,.path").forEach(node => node.remove());
-      const repos = hubState.repos || [];
-      const maxY = repos.reduce((max, repo, index) => Math.max(max, roomPosition(index)[1] + 250), 680);
-      world.style.minHeight = maxY + "px";
-      repos.forEach((repo, index) => {{
-        const [left, top] = roomPosition(index);
-        const room = document.createElement("section");
-        room.className = "room";
-        room.dataset.phase = repo.phase || "idle";
-        room.style.left = left + "px";
-        room.style.top = top + "px";
-        room.tabIndex = 0;
-        room.setAttribute("role", "button");
-        room.setAttribute("aria-label", "Abrir " + (repo.project || repo.root));
-        room.innerHTML = `
-          <div class="room-title">${{esc(repo.project || "Projeto")}}</div>
-          <div class="room-meta">${{esc(phaseLabels[repo.phase] || repo.phase)}} - ${{esc(repo.branch || "sem branch")}}</div>
-          <div class="metric-line">
-            <div class="mini">T ${{esc(repo.counts?.tasks ?? 0)}}</div>
-            <div class="mini">Q ${{esc(repo.counts?.queued ?? 0)}}</div>
-            <div class="mini">A ${{esc(repo.counts?.artifacts ?? 0)}}</div>
-            <div class="mini">S ${{esc(repo.counts?.security_findings ?? 0)}}</div>
-          </div>
-          <div class="console"></div>
-          <div class="station"></div>
-        `;
-        (repo.agents || []).slice(0, 3).forEach((agent, agentIndex) => {{
-          room.appendChild(renderAgent(agent, agentIndex, index));
-        }});
-        room.addEventListener("click", () => {{ selectedIndex = index; selectedAgentId = ""; renderDetail(); }});
-        room.addEventListener("keydown", event => {{
-          if (event.key === "Enter" || event.key === " ") {{
-            event.preventDefault();
-            selectedIndex = index;
-            selectedAgentId = "";
-            renderDetail();
-          }}
-        }});
-        world.appendChild(room);
-      }});
-      renderRepoList();
-      renderDetail();
-    }}
-    function renderRepoList() {{
-      const list = document.getElementById("repoList");
-      list.innerHTML = "";
-      (hubState.repos || []).forEach((repo, index) => {{
-        const button = document.createElement("button");
-        button.className = "repo-button";
-        button.innerHTML = `<strong>${{esc(repo.project || repo.root)}}</strong><br><span class="detail">${{esc(phaseLabels[repo.phase] || repo.phase)}} - ${{esc(repo.root)}}</span>`;
-        button.addEventListener("click", () => {{ selectedIndex = index; selectedAgentId = ""; renderDetail(); }});
-        list.appendChild(button);
-      }});
-    }}
-    function activeSurfaceId(wmux) {{
-      const surfaces = wmux.surfaces || [];
-      const active = surfaces.find(surface => surface.isActive) || surfaces[0] || {{}};
-      return active.id || wmux.surface_id || "";
-    }}
-    function wmuxTerminalRows(wmux) {{
-      const surfaces = wmux.surfaces || [];
-      if (!surfaces.length) return `<div class="detail">Nenhum terminal wmux listado.</div>`;
-      return surfaces.map(surface => `
-        <div class="terminal-row">
-          <span>${{esc(surface.id || "-")}}<br><span class="detail">${{esc(surface.type || "terminal")}} / ${{esc(surface.paneId || surface.pane_id || "-")}}</span></span>
-          <button class="terminal-button" data-wmux-focus-surface="${{esc(surface.id || "")}}">Focar</button>
-        </div>
-      `).join("");
-    }}
-    function wmuxAgentRows(wmux) {{
-      const agents = wmux.agents || [];
-      if (!agents.length) return `<div class="detail">Nenhum agent wmux listado.</div>`;
-      return agents.map(agent => {{
-        const surfaceId = agent.surfaceId || agent.surface_id || "";
-        return `
-          <div class="terminal-row">
-            <span>${{esc(agent.label || agent.agentId || agent.id || "agent")}}<br><span class="detail">${{esc(agent.status || "-")}} / ${{esc(surfaceId || "sem surface")}}</span></span>
-            <button class="terminal-button" data-wmux-focus-surface="${{esc(surfaceId)}}" ${{surfaceId ? "" : "disabled"}}>Focar</button>
-          </div>
-        `;
-      }}).join("");
-    }}
-    function eventTimeline(repo, selectedAgent) {{
-      const events = (repo.events || []).filter(event => {{
-        if (selectedAgent?.id && event.agent_id) return event.agent_id === selectedAgent.id;
-        if (selectedAgent?.task_id && event.task_id) return event.task_id === selectedAgent.task_id;
-        return true;
-      }}).slice(-12).reverse();
-      if (!events.length) return `<li>Nenhum evento registrado ainda.</li>`;
-      return events.map(event => {{
-        const payload = event.payload || {{}};
-        const text = payload.summary || payload.message || event.type || "evento";
-        return `<li><span class="event-time">${{esc(event.ts || "")}} - ${{esc(event.type || "")}}</span>${{esc(event.task_id || "")}} ${{esc(text)}}</li>`;
-      }}).join("");
-    }}
-    async function postJson(path, payload) {{
-      const token = hubState.action_token || "";
-      const response = await fetch(path, {{
-        method: "POST",
-        headers: {{ "Content-Type": "application/json", "X-Harness-Hub-Token": token }},
-        body: JSON.stringify(payload || {{}})
-      }});
-      const data = await response.json().catch(() => ({{ ok: false, error: "Resposta invalida." }}));
-      if (!response.ok || data.ok === false) throw new Error(data.error || "Falha ao chamar wmux.");
-      return data;
-    }}
-    async function runWmuxAction(path, payload) {{
-      try {{
-        await postJson(path, payload);
-        await refresh();
-      }} catch (error) {{
-        alert(error.message || String(error));
-      }}
-    }}
-    function bindWmuxControls(repo, selectedSurfaceId) {{
-      const detail = document.getElementById("detail");
-      detail.querySelectorAll("[data-wmux-focus-surface]").forEach(button => {{
-        button.addEventListener("click", () => {{
-          runWmuxAction("/wmux/focus", {{ surface_id: button.dataset.wmuxFocusSurface }});
-        }});
-      }});
-      const newTerminal = detail.querySelector("[data-wmux-new-terminal]");
-      if (newTerminal) {{
-        newTerminal.addEventListener("click", () => {{
-          runWmuxAction("/wmux/new-terminal", {{ cwd: repo.root, direction: "down" }});
-        }});
-      }}
-      const sendButton = detail.querySelector("[data-wmux-send]");
-      const input = detail.querySelector("#wmuxSendText");
-      if (sendButton && input) {{
-        sendButton.addEventListener("click", () => {{
-          const text = input.value.trim();
-          if (!text) return;
-          runWmuxAction("/wmux/send", {{ surface_id: selectedSurfaceId, text, enter: true }});
-          input.value = "";
-        }});
-      }}
-      const readButton = detail.querySelector("[data-wmux-read]");
-      const screen = detail.querySelector("#wmuxScreen");
-      if (readButton && screen) {{
-        readButton.addEventListener("click", async () => {{
-          screen.textContent = "Lendo terminal...";
-          try {{
-            const data = await postJson("/wmux/read-screen", {{ surface_id: selectedSurfaceId, lines: 80 }});
-            screen.textContent = data.text || data.note || "wmux nao retornou texto de tela.";
-          }} catch (error) {{
-            screen.textContent = error.message || String(error);
-          }}
-        }});
-      }}
-    }}
-    function renderDetail() {{
-      const repo = (hubState.repos || [])[selectedIndex];
-      const detail = document.getElementById("detail");
-      if (!repo) {{
-        detail.textContent = "Nenhum repo carregado.";
-        return;
-      }}
-      const activeTask = repo.active_task || {{}};
-      const queue = repo.queue || [];
-      const tasks = repo.tasks || [];
-      const agents = repo.agents || [];
-      const selectedAgent = agents.find(agent => agent.id === selectedAgentId) || agents[0] || {{}};
-      const wmux = hubState.wmux || {{}};
-      const selectedSurfaceId = activeSurfaceId(wmux);
-      detail.innerHTML = `
-        <strong>${{esc(repo.project)}}</strong><br>
-        Fase: ${{esc(phaseLabels[repo.phase] || repo.phase)}}<br>
-        Raiz: ${{esc(repo.root)}}<br>
-        Branch: ${{esc(repo.branch || "-")}}<br>
-        Profile: ${{esc(repo.active_profile || "-")}}<br>
-        <br><strong>Agente</strong><br>
-        Nome: ${{esc(selectedAgent.name || "-")}}<br>
-        Estado: ${{esc(selectedAgent.state || "-")}}<br>
-        Fala: ${{esc(selectedAgent.speech || "-")}}<br>
-        Task do agente: ${{esc(selectedAgent.task_id || "-")}} ${{esc(selectedAgent.task_title || "")}}<br>
-        Surface: ${{esc(selectedAgent.surface_id || "-")}}<br>
-        <br><strong>Timeline</strong>
-        <ul class="timeline">${{eventTimeline(repo, selectedAgent)}}</ul>
-        <br><strong>Task ativa</strong><br>
-        Task ativa: ${{esc(activeTask.task_id || "-")}} ${{esc(activeTask.title || "")}}<br>
-        Run: ${{esc(repo.latest_run || "-")}}<br>
-        Checkpoint: ${{esc(repo.latest_checkpoint || "-")}}<br>
-        Security findings: ${{esc(repo.counts?.security_findings ?? 0)}}<br>
-        <div class="terminal-panel">
-          <strong>Terminal wmux</strong><br>
-          Status: <span class="${{wmux.available ? "status-ok" : "status-off"}}">${{wmux.available ? "conectado" : "desconectado"}}</span><br>
-          Comando: ${{esc(wmux.command || "wmux")}}<br>
-          ${{wmux.available ? `
-            <div class="terminal-actions">
-              <button class="terminal-button" data-wmux-new-terminal>Abrir terminal deste repo</button>
-            </div>
-            <input class="terminal-input" id="wmuxSendText" placeholder="Mensagem ou comando para o terminal ativo">
-            <div class="terminal-actions">
-              <button class="terminal-button" data-wmux-send data-surface-id="${{esc(selectedSurfaceId)}}">Enviar para terminal ativo</button>
-              <button class="terminal-button" data-wmux-read>Ler tela</button>
-            </div>
-            <pre class="terminal-screen" id="wmuxScreen">Clique em "Ler tela" para carregar o terminal ativo.</pre>
-            <strong>Terminais</strong>
-            ${{wmuxTerminalRows(wmux)}}
-            <br><strong>Agents wmux</strong>
-            ${{wmuxAgentRows(wmux)}}
-          ` : `<span class="detail">${{esc(wmux.error || "wmux nao respondeu.")}}</span>`}}
-        </div>
-        <br><strong>Fila</strong>
-        <ul class="task-list">${{queue.slice(-5).map(item => `<li>${{esc(item.id)}} [${{esc(item.status)}}] ${{esc(item.title)}}</li>`).join("") || "<li>Fila vazia.</li>"}}</ul>
-        <br><strong>Tasks recentes</strong>
-        <ul class="task-list">${{tasks.slice(-5).map(task => `<li>${{esc(task.task_id)}} [${{esc(task.status)}}] ${{esc(task.title)}}</li>`).join("") || "<li>Nenhuma task.</li>"}}</ul>
-      `;
-      bindWmuxControls(repo, selectedSurfaceId);
-    }}
-    async function refresh() {{
-      try {{
-        const response = await fetch("hub-state.json?ts=" + Date.now(), {{
-          cache: "no-store",
-          headers: {{ "X-Harness-Hub-Token": hubState.action_token || "" }}
-        }});
-        if (!response.ok) return;
-        hubState = await response.json();
-        render();
-      }} catch (error) {{
-        console.warn("Hub refresh failed", error);
-      }}
-    }}
-    render();
-    setInterval(refresh, refreshMs);
-  </script>
-</body>
-</html>
-"""
-
-
 def write_dashboard_hub(root: Path, paths: list[Path], refresh_seconds: int = 3) -> dict[str, Any]:
     state = collect_dashboard_hub_state(paths)
     target = dashboard_hub_root(root)
-    write_text(target / "index.html", render_dashboard_hub_html(state, refresh_seconds))
-    write_json(target / "hub-state.json", state)
+    write_dashboard_hub_files(target, state, refresh_seconds)
     return {"state": state, "path": target / "index.html", "state_path": target / "hub-state.json"}
 
 
@@ -5548,8 +4641,7 @@ def command_dashboard_hub_serve(args: argparse.Namespace) -> None:
         cache_ttl_seconds=cache_ttl_seconds,
     )
     directory = dashboard_hub_root(root)
-    write_text(directory / "index.html", render_dashboard_hub_html(initial_state, args.refresh_seconds))
-    write_json(directory / "hub-state.json", initial_state)
+    write_dashboard_hub_files(directory, initial_state, args.refresh_seconds)
 
     class HubHandler(http.server.SimpleHTTPRequestHandler):
         def send_json(self, status: int, payload: dict[str, Any]) -> None:
@@ -6214,17 +5306,10 @@ def command_telegram_listen(args: argparse.Namespace) -> None:
     offset = state.get("offset")
     print("Ouvindo Telegram. Ctrl+C para parar.")
     while True:
-        payload = {
-            "timeout": args.timeout,
-            "limit": args.limit,
-            "allowed_updates": ["message", "edited_message"],
-        }
-        if offset:
-            payload["offset"] = offset
-        updates = telegram_api_call(token, "getUpdates", payload, timeout=args.timeout + 15)
+        updates = telegram_poll_updates(token, timeout=args.timeout, limit=args.limit, offset=offset)
         processed = 0
         for update in updates:
-            update_id = int(update.get("update_id", 0))
+            update_id = telegram_update_context(update)["update_id"]
             path = handle_telegram_update(
                 root,
                 config,
@@ -6236,12 +5321,64 @@ def command_telegram_listen(args: argparse.Namespace) -> None:
             if path:
                 processed += 1
                 print(f"Telegram update salvo: {path}")
-            offset = max(offset or 0, update_id + 1)
-            write_json(telegram_state_path(root), {"offset": offset, "updated_at": utc_now()})
+            offset = advance_telegram_offset(offset, update_id)
+            write_telegram_offset_state(telegram_state_path(root), offset)
         if args.once:
             if not processed:
                 print("Nenhuma mensagem nova.")
             return
+
+
+def telegram_poll_updates(
+    token: str,
+    *,
+    timeout: int,
+    limit: int,
+    offset: int | None,
+) -> list[dict[str, Any]]:
+    payload: dict[str, Any] = {
+        "timeout": timeout,
+        "limit": limit,
+        "allowed_updates": ["message", "edited_message"],
+    }
+    if offset:
+        payload["offset"] = offset
+    return telegram_api_call(token, "getUpdates", payload, timeout=timeout + 15)
+
+
+def telegram_update_context(update: dict[str, Any]) -> dict[str, Any]:
+    message = update.get("message") or update.get("edited_message") or {}
+    text = str(message.get("text") or "")
+    return {
+        "update_id": int(update.get("update_id", 0)),
+        "message": message,
+        "chat_id": str(message.get("chat", {}).get("id", "")),
+        "text": text,
+        "stripped": text.strip(),
+    }
+
+
+def advance_telegram_offset(offset: int | None, update_id: int) -> int:
+    return max(offset or 0, update_id + 1)
+
+
+def write_telegram_offset_state(path: Path, offset: int | None) -> None:
+    write_json(path, {"offset": offset, "updated_at": utc_now()})
+
+
+def write_telegram_bridge_state(
+    path: Path,
+    telegram_offset: int | None,
+    event_offset: int | None,
+) -> None:
+    write_json(
+        path,
+        {
+            "telegram_offset": telegram_offset,
+            "event_offset": event_offset,
+            "updated_at": utc_now(),
+        },
+    )
 
 
 def command_telegram_codex(args: argparse.Namespace) -> None:
@@ -6268,26 +5405,24 @@ def command_telegram_codex(args: argparse.Namespace) -> None:
     offset = state.get("offset")
     print("Gateway Telegram -> Codex ativo. Ctrl+C para parar.")
     while True:
-        payload = {
-            "timeout": args.poll_timeout,
-            "limit": args.limit,
-            "allowed_updates": ["message", "edited_message"],
-        }
-        if offset:
-            payload["offset"] = offset
-        updates = telegram_api_call(token, "getUpdates", payload, timeout=args.poll_timeout + 15)
+        updates = telegram_poll_updates(
+            token,
+            timeout=args.poll_timeout,
+            limit=args.limit,
+            offset=offset,
+        )
         processed = 0
         for update in updates:
-            update_id = int(update.get("update_id", 0))
-            message = update.get("message") or update.get("edited_message") or {}
-            chat_id = str(message.get("chat", {}).get("id", ""))
-            text = str(message.get("text") or "")
+            context = telegram_update_context(update)
+            update_id = context["update_id"]
+            chat_id = context["chat_id"]
+            stripped = context["stripped"]
             if not telegram_chat_allowed(config, chat_id):
                 handle_telegram_update(root, config, update, reply=False)
-                offset = max(offset or 0, update_id + 1)
+                offset = advance_telegram_offset(offset, update_id)
+                write_telegram_offset_state(state_path, offset)
                 continue
 
-            stripped = text.strip()
             if stripped.startswith("/") and not stripped.lower().startswith("/codex"):
                 path = handle_telegram_update(
                     root,
@@ -6300,8 +5435,8 @@ def command_telegram_codex(args: argparse.Namespace) -> None:
                 if path:
                     processed += 1
                     print(f"Comando Harness via Telegram: {path}")
-                offset = max(offset or 0, update_id + 1)
-                write_json(state_path, {"offset": offset, "updated_at": utc_now()})
+                offset = advance_telegram_offset(offset, update_id)
+                write_telegram_offset_state(state_path, offset)
                 continue
 
             path = handle_telegram_update(
@@ -6313,11 +5448,13 @@ def command_telegram_codex(args: argparse.Namespace) -> None:
                 reply=False,
             )
             if not path:
-                offset = max(offset or 0, update_id + 1)
+                offset = advance_telegram_offset(offset, update_id)
+                write_telegram_offset_state(state_path, offset)
                 continue
             item = read_json(path, {})
             if item.get("action") == "rejected_chat":
-                offset = max(offset or 0, update_id + 1)
+                offset = advance_telegram_offset(offset, update_id)
+                write_telegram_offset_state(state_path, offset)
                 continue
 
             prompt_text = item.get("prompt_text") or ""
@@ -6368,8 +5505,8 @@ def command_telegram_codex(args: argparse.Namespace) -> None:
                 if not args.no_reply:
                     telegram_reply(config, chat_id, f"Falha ao chamar Codex: {exc}")
             processed += 1
-            offset = max(offset or 0, update_id + 1)
-            write_json(state_path, {"offset": offset, "updated_at": utc_now()})
+            offset = advance_telegram_offset(offset, update_id)
+            write_telegram_offset_state(state_path, offset)
         if args.once:
             if not processed:
                 print("Nenhuma mensagem nova.")
@@ -6462,14 +5599,7 @@ def command_telegram_bridge(args: argparse.Namespace) -> None:
                 forwarded += 1
             if forwarded:
                 print(f"Bridge enviou {forwarded} eventos Harness.")
-            write_json(
-                bridge_state_path,
-                {
-                    "telegram_offset": update_offset,
-                    "event_offset": event_offset,
-                    "updated_at": utc_now(),
-                },
-            )
+            write_telegram_bridge_state(bridge_state_path, update_offset, event_offset)
 
         if not args.session_file and args.follow_latest:
             latest = latest_codex_session_file()
@@ -6491,25 +5621,23 @@ def command_telegram_bridge(args: argparse.Namespace) -> None:
         if mirrored:
             print(f"Mirror enviou {mirrored} updates.")
 
-        payload = {
-            "timeout": args.poll_timeout,
-            "limit": args.limit,
-            "allowed_updates": ["message", "edited_message"],
-        }
-        if update_offset:
-            payload["offset"] = update_offset
-        updates = telegram_api_call(token, "getUpdates", payload, timeout=args.poll_timeout + 15)
+        updates = telegram_poll_updates(
+            token,
+            timeout=args.poll_timeout,
+            limit=args.limit,
+            offset=update_offset,
+        )
         processed = 0
         for update in updates:
-            update_id = int(update.get("update_id", 0))
-            message = update.get("message") or update.get("edited_message") or {}
-            chat_id = str(message.get("chat", {}).get("id", ""))
-            text = str(message.get("text") or "")
-            stripped = text.strip()
+            context = telegram_update_context(update)
+            update_id = context["update_id"]
+            chat_id = context["chat_id"]
+            stripped = context["stripped"]
 
             if not telegram_chat_allowed(config, chat_id):
                 handle_telegram_update(root, config, update, reply=False)
-                update_offset = max(update_offset or 0, update_id + 1)
+                update_offset = advance_telegram_offset(update_offset, update_id)
+                write_telegram_bridge_state(bridge_state_path, update_offset, event_offset)
                 continue
 
             if stripped.startswith("/") and not stripped.lower().startswith(("/codex", "/queue", "/note", "/msg")):
@@ -6524,8 +5652,8 @@ def command_telegram_bridge(args: argparse.Namespace) -> None:
                 if path:
                     print(f"Comando Harness via Telegram: {path}")
                     processed += 1
-                update_offset = max(update_offset or 0, update_id + 1)
-                write_json(bridge_state_path, {"telegram_offset": update_offset, "event_offset": event_offset, "updated_at": utc_now()})
+                update_offset = advance_telegram_offset(update_offset, update_id)
+                write_telegram_bridge_state(bridge_state_path, update_offset, event_offset)
                 continue
 
             path = handle_telegram_update(
@@ -6537,7 +5665,8 @@ def command_telegram_bridge(args: argparse.Namespace) -> None:
                 reply=False,
             )
             if not path:
-                update_offset = max(update_offset or 0, update_id + 1)
+                update_offset = advance_telegram_offset(update_offset, update_id)
+                write_telegram_bridge_state(bridge_state_path, update_offset, event_offset)
                 continue
             item = read_json(path, {})
             prompt_text = item.get("prompt_text") or ""
@@ -6557,8 +5686,8 @@ def command_telegram_bridge(args: argparse.Namespace) -> None:
                             "Execucao remota via Telegram esta desligada. Ative allow_remote_execution e allowed_chat_id.",
                         )
                     processed += 1
-                    update_offset = max(update_offset or 0, update_id + 1)
-                    write_json(bridge_state_path, {"telegram_offset": update_offset, "event_offset": event_offset, "updated_at": utc_now()})
+                    update_offset = advance_telegram_offset(update_offset, update_id)
+                    write_telegram_bridge_state(bridge_state_path, update_offset, event_offset)
                     continue
                 try:
                     if not args.no_reply:
@@ -6607,8 +5736,8 @@ def command_telegram_bridge(args: argparse.Namespace) -> None:
                         "Use /codex <mensagem> se quiser chamar Codex em paralelo agora.",
                     )
             processed += 1
-            update_offset = max(update_offset or 0, update_id + 1)
-            write_json(bridge_state_path, {"telegram_offset": update_offset, "event_offset": event_offset, "updated_at": utc_now()})
+            update_offset = advance_telegram_offset(update_offset, update_id)
+            write_telegram_bridge_state(bridge_state_path, update_offset, event_offset)
 
         if processed:
             print(f"Bridge processou {processed} mensagens Telegram.")
