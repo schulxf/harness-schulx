@@ -98,13 +98,7 @@ from harness_core.dashboard_hub import (  # noqa: E402,F401
 from harness_core.dashboard_hub import write_dashboard_hub_files  # noqa: E402
 from harness_core.defaults import (  # noqa: E402
     CONTEXT_KINDS,
-    DEFAULT_EVALUATION_POLICY,
-    DEFAULT_FAILURE_POLICY,
-    DEFAULT_GITHUB_CONFIG,
     DEFAULT_OPERATION_PROFILES,
-    DEFAULT_PROTECTED_BRANCHES,
-    DEFAULT_REVIEW_POLICY,
-    DEFAULT_TELEGRAM_CONFIG,
 )
 from harness_core.errors import HarnessError  # noqa: E402
 from harness_core.evaluation_text import (  # noqa: E402,F401
@@ -152,14 +146,13 @@ from harness_core.hub_state import (  # noqa: E402
     collect_dashboard_hub_state,
     write_dashboard_hub,
 )
+from harness_core.init_project import initialize_harness_project  # noqa: E402
 from harness_core.memory import (  # noqa: E402
     load_memory,
     next_memory_id,
     save_memory,
 )
 from harness_core.paths import (  # noqa: E402
-    agent_registry_path,
-    artifacts_index_path,
     artifacts_root,
     assert_inside_root,
     checkpoints_root,
@@ -171,16 +164,11 @@ from harness_core.paths import (  # noqa: E402
     event_stream_path,
     github_root,
     harness_root,
-    hub_repo_registry_path,
-    memory_index_path,
     normalize_path_key,
-    plugin_registry_path,
-    queue_path,
     relative_to_root,
     resolve_repo_path,
     security_root,
     supervisor_state_path,
-    tasks_index_path,
     telegram_root,
     telegram_state_path,
     to_posix,
@@ -220,7 +208,6 @@ from harness_core.security_scan import (  # noqa: E402
     scan_file_for_secrets,
 )
 from harness_core.sensors import (  # noqa: E402
-    detect_default_sensors,
     fastest_available_sensor_tier,
     final_sensor_payload,
     make_sensor_result,
@@ -325,112 +312,13 @@ def command_init(args: argparse.Namespace) -> None:
     require_existing_root(root)
     require_safe_branch(root, args, "init")
     hroot = harness_root(root)
-    for relative in [
-        "context",
-        "tasks",
-        "contracts",
-        "runs",
-        "evaluations",
-        "reports",
-        "queue",
-        "supervisor",
-        "checkpoints",
-        "artifacts",
-        "dashboard",
-        "dashboard/hub",
-        "agents",
-        "memory",
-        "plugins",
-        "security",
-        "github",
-        "telegram",
-        "inbox/telegram/media",
-    ]:
-        (hroot / relative).mkdir(parents=True, exist_ok=True)
-
-    sensors = args.sensor if args.sensor else detect_default_sensors(root)
-    config = {
-        "version": 1,
-        "runner_version": VERSION,
-        "project_name": args.name or root.name,
-        "created_at": utc_now(),
-        "default_sensors": sensors,
-        "required_context": [],
-        "evaluation_policy": DEFAULT_EVALUATION_POLICY,
-        "review_policy": DEFAULT_REVIEW_POLICY,
-        "failure_policy": DEFAULT_FAILURE_POLICY,
-        "operation_profiles": DEFAULT_OPERATION_PROFILES,
-        "active_profile": "balanced",
-        "profiles": {},
-        "budgets": {},
-        "github": DEFAULT_GITHUB_CONFIG,
-        "telegram": DEFAULT_TELEGRAM_CONFIG,
-        "protected_branches": DEFAULT_PROTECTED_BRANCHES,
-        "sensor_execution_requires_review": True,
-        "policy": {
-            "context_preflight_required_before_start": True,
-            "record_evidence_before_done": True,
-            "cache_context_preflight": True,
-        },
-    }
-
-    if not config_path(root).exists() or args.force:
-        write_json(config_path(root), config)
-
-    if not tasks_index_path(root).exists():
-        write_json(tasks_index_path(root), [])
-
-    if not context_manifest_path(root).exists():
-        write_json(context_manifest_path(root), [])
-
-    if not queue_path(root).exists():
-        write_json(queue_path(root), [])
-
-    if not memory_index_path(root).exists():
-        write_json(memory_index_path(root), [])
-
-    if not plugin_registry_path(root).exists():
-        save_plugins(root, [])
-
-    if not artifacts_index_path(root).exists():
-        write_json(artifacts_index_path(root), [])
-
-    if not agent_registry_path(root).exists():
-        write_json(agent_registry_path(root), {"agents": [], "updated_at": utc_now()})
-
-    if not hub_repo_registry_path(root).exists():
-        write_json(hub_repo_registry_path(root), {"repos": [str(root)], "updated_at": utc_now()})
-
-    if not event_stream_path(root).exists():
-        write_text(event_stream_path(root), "")
-
-    progress = hroot / "progress.md"
-    if not progress.exists():
-        write_text(
-            progress,
-            "# Progresso do Harness\n\n"
-            f"Inicializado: {utc_now()}\n\n"
-            "## Atual\n\n"
-            "- Nenhuma task ativa ainda.\n",
-        )
-
-    gitignore = hroot / ".gitignore"
-    if not gitignore.exists():
-        write_text(
-            gitignore,
-            "# Por padrao, versionar apenas o protocolo enxuto do Harness.\n"
-            "# Execucoes, contexto copiado e outputs grandes ficam locais.\n"
-            "*\n"
-            "!.gitignore\n"
-            "!config.json\n"
-            "!progress.md\n"
-            "!tasks/\n"
-            "!tasks/**\n"
-            "!contracts/\n"
-            "!contracts/**\n"
-            "!reports/\n"
-            "!reports/**\n",
-        )
+    sensors = initialize_harness_project(
+        root,
+        name=args.name,
+        sensors=args.sensor if args.sensor else None,
+        force=args.force,
+        runner_version=VERSION,
+    )
 
     print(f"Harness inicializado em {hroot}")
     if sensors:
