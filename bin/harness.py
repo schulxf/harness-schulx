@@ -149,6 +149,21 @@ from harness_core.security_scan import (  # noqa: E402
 from harness_core.security_scan import (  # noqa: E402
     scan_file_for_secrets as scan_file_for_secrets,
 )
+from harness_core.sensors import (  # noqa: E402,F401
+    SENSOR_TIERS as SENSOR_TIERS,
+)
+from harness_core.sensors import (  # noqa: E402
+    detect_default_sensors,
+    fastest_available_sensor_tier,
+    final_sensor_payload,
+    make_sensor_result,
+    resolve_sensor_argv,
+    sensors_for_tier,
+    split_sensor_command,
+)
+from harness_core.sensors import (  # noqa: E402
+    normalize_sensor_tiers as normalize_sensor_tiers,
+)
 from harness_core.status import (  # noqa: E402
     QUEUE_STATUS_ACTIVE,
     QUEUE_STATUS_DONE,
@@ -915,28 +930,6 @@ def openai_describe_image(path: Path, config: dict[str, Any]) -> str:
     return openai_extract_output_text(response)
 
 
-def detect_default_sensors(root: Path) -> list[str]:
-    sensors: list[str] = []
-    package_json = root / "package.json"
-    if package_json.exists():
-        try:
-            package = read_json(package_json, {})
-            scripts = package.get("scripts", {})
-            for script_name in ["lint", "typecheck", "test", "build"]:
-                if script_name in scripts:
-                    if script_name == "test":
-                        sensors.append("npm test")
-                    else:
-                        sensors.append(f"npm run {script_name}")
-        except Exception:
-            pass
-
-    if (root / "pyproject.toml").exists() or (root / "pytest.ini").exists():
-        sensors.append("python -m pytest")
-
-    return sensors
-
-
 def discover_git_dir(root: Path) -> Path | None:
     resolved = root.resolve(strict=False)
     for path in [resolved, *resolved.parents]:
@@ -1036,44 +1029,6 @@ def prepared_repo(args: argparse.Namespace, *, safe_operation: str | None = None
     if safe_operation:
         require_safe_branch(root, args, safe_operation)
     return root
-
-
-def split_sensor_command(command: str) -> list[str]:
-    return shlex.split(command, posix=os.name != "nt")
-
-
-def resolve_sensor_argv(argv: list[str]) -> list[str]:
-    if not argv:
-        return argv
-    executable = shutil.which(argv[0])
-    if not executable:
-        return argv
-    return [executable, *argv[1:]]
-
-
-def make_sensor_result(
-    command: str,
-    argv: list[str],
-    resolved_argv: list[str],
-    shell: bool,
-    exit_code: int,
-    duration_ms: int,
-    stdout: str = "",
-    stderr: str = "",
-    **extra: Any,
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "command": command,
-        "argv": argv,
-        "resolved_argv": resolved_argv,
-        "shell": shell,
-        "exit_code": exit_code,
-        "duration_ms": duration_ms,
-        "stdout": stdout,
-        "stderr": stderr,
-    }
-    payload.update(extra)
-    return payload
 
 
 def latest_run_dir(root: Path, task_id: str) -> Path:
@@ -1253,62 +1208,6 @@ def load_contract(root: Path, task_id: str) -> dict[str, Any]:
     if not path.exists():
         raise SystemExit(f"Contrato nao encontrado para {task_id}. Rode: harness contract {task_id}")
     return read_json(path, {})
-
-
-SENSOR_TIERS = ["smoke", "affected", "full"]
-
-
-def normalize_sensor_tiers(contract: dict[str, Any]) -> dict[str, list[str]]:
-    configured = contract.get("sensor_tiers")
-    tiers = {tier: [] for tier in SENSOR_TIERS}
-    if isinstance(configured, dict):
-        for tier in SENSOR_TIERS:
-            values = configured.get(tier, [])
-            if isinstance(values, list):
-                tiers[tier] = [str(item) for item in values if str(item).strip()]
-
-    legacy = [str(item) for item in contract.get("required_sensors", []) if str(item).strip()]
-    if legacy:
-        for command in legacy:
-            if command not in tiers["full"]:
-                tiers["full"].append(command)
-    return tiers
-
-
-def sensors_for_tier(contract: dict[str, Any], tier: str) -> list[str]:
-    tiers = normalize_sensor_tiers(contract)
-    if tier == "all":
-        commands: list[str] = []
-        for name in SENSOR_TIERS:
-            for command in tiers[name]:
-                if command not in commands:
-                    commands.append(command)
-        return commands
-    if tier not in tiers:
-        raise SystemExit(f"Tier de sensor invalido: {tier}")
-    return tiers[tier]
-
-
-def fastest_available_sensor_tier(contract: dict[str, Any]) -> str:
-    tiers = normalize_sensor_tiers(contract)
-    for tier in SENSOR_TIERS:
-        if tiers[tier]:
-            return tier
-    return "full"
-
-
-def final_sensor_payload(run_dir: Path, contract: dict[str, Any]) -> dict[str, Any]:
-    tiers = normalize_sensor_tiers(contract)
-    if tiers["full"]:
-        for filename in ["sensors-full.json", "sensors-all.json", "sensors.json"]:
-            path = run_dir / filename
-            if not path.exists():
-                continue
-            payload = read_json(path, {})
-            if payload.get("tier") in {"full", "all"}:
-                return payload
-        return {}
-    return read_json(run_dir / "sensors.json", {})
 
 
 def summarize_context(root: Path) -> str:
