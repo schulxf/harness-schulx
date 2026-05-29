@@ -169,6 +169,12 @@ from harness_core.queue_state import (  # noqa: E402
     update_queue_item,
 )
 from harness_core.records import TaskRecord  # noqa: E402
+from harness_core.repo_guard import (  # noqa: E402
+    prepared_repo,
+    require_existing_root,
+    require_safe_branch,
+    root_from_args,
+)
 from harness_core.run_state import (  # noqa: E402
     find_unevaluated_runs,
     latest_run_dir,
@@ -222,19 +228,6 @@ from harness_core.telegram_policy import (  # noqa: E402
 )
 
 VERSION = "0.3.0"
-
-def root_from_args(args: argparse.Namespace) -> Path:
-    return Path(args.repo).expanduser().resolve()
-
-
-def require_existing_root(root: Path) -> None:
-    if not root.exists():
-        raise SystemExit(
-            f"Diretorio do repo nao existe: {root}\n"
-            "Use um caminho real ja existente ou rode `init --create` de forma explicita."
-        )
-    if not root.is_dir():
-        raise SystemExit(f"O caminho do repo nao e um diretorio: {root}")
 
 
 def queue_item_id(task_id: str) -> str:
@@ -503,29 +496,6 @@ def openai_describe_image(path: Path, config: dict[str, Any]) -> str:
         timeout=120,
     )
     return openai_extract_output_text(response)
-
-
-def require_safe_branch(root: Path, args: argparse.Namespace, operation: str) -> None:
-    branch = current_git_branch(root)
-    if not branch:
-        return
-    protected = protected_branches(root)
-    if branch in protected and not getattr(args, "allow_main", False):
-        raise SystemExit(
-            f"Operacao bloqueada: `{operation}` esta na branch protegida `{branch}`.\n"
-            "Crie uma branch de trabalho, por exemplo: "
-            "`git switch -c harness/TASK-001`, ou rode com `--allow-main` antes do comando "
-            "se voce realmente quiser operar nessa branch."
-        )
-
-
-def prepared_repo(args: argparse.Namespace, *, safe_operation: str | None = None) -> Path:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    if safe_operation:
-        require_safe_branch(root, args, safe_operation)
-    return root
 
 
 def create_checkpoint(
