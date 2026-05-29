@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 HARNESS_DIR = ".harness"
@@ -116,3 +117,47 @@ def contract_file_path(root: Path, task_id: str) -> Path:
 def evaluation_markdown_path(root: Path, task_id: str) -> Path:
     return harness_root(root) / "evaluations" / f"{task_id}.md"
 
+
+def resolve_repo_path(root: Path, value: str) -> Path:
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = root / path
+    return path.resolve(strict=False)
+
+
+def is_inside_root(root: Path, path: Path) -> bool:
+    resolved_root = root.resolve(strict=False)
+    resolved_path = path.resolve(strict=False)
+    if resolved_path == resolved_root:
+        return True
+    try:
+        resolved_path.relative_to(resolved_root)
+    except ValueError:
+        return False
+    return True
+
+
+def assert_inside_root(root: Path, path: Path, label: str = "path") -> Path:
+    if not is_inside_root(root, path):
+        resolved_root = root.resolve(strict=False)
+        resolved_path = path.resolve(strict=False)
+        raise SystemExit(
+            f"{label} fora do repo bloqueado: {resolved_path}\n"
+            f"Caminhos devem ficar dentro de {resolved_root}."
+        )
+    return path.resolve(strict=False)
+
+
+def relative_to_root(root: Path, path: Path) -> str:
+    try:
+        return str(path.resolve(strict=False).relative_to(root)).replace("\\", "/")
+    except ValueError:
+        return str(path.resolve(strict=False)).replace("\\", "/")
+
+
+def normalize_path_key(path: Path) -> str:
+    return os.path.normcase(str(path.resolve(strict=False)))
+
+
+def to_posix(path: str | Path) -> str:
+    return str(path).replace("\\", "/") if path else ""

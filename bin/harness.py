@@ -48,6 +48,7 @@ from harness_core.paths import (  # noqa: E402
     agent_registry_path,
     artifacts_index_path,
     artifacts_root,
+    assert_inside_root,
     checkpoints_root,
     config_path,
     context_manifest_path,
@@ -60,9 +61,12 @@ from harness_core.paths import (  # noqa: E402
     harness_root,
     hub_repo_registry_path,
     memory_index_path,
+    normalize_path_key,
     plugin_registry_path,
     preflight_cache_path,
     queue_path,
+    relative_to_root,
+    resolve_repo_path,
     security_root,
     supervisor_state_path,
     tasks_index_path,
@@ -71,7 +75,9 @@ from harness_core.paths import (  # noqa: E402
     telegram_media_root,
     telegram_root,
     telegram_state_path,
+    to_posix,
 )
+from harness_core.paths import is_inside_root as is_inside_root  # noqa: E402
 from harness_core.records import QueueRecord, TaskRecord  # noqa: E402
 from harness_core.status import (  # noqa: E402
     QUEUE_STATUS_ACTIVE,
@@ -485,51 +491,6 @@ def task_budget(task: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
     if isinstance(task.get("budget"), dict):
         budget.update(task["budget"])
     return budget
-
-
-def resolve_repo_path(root: Path, value: str) -> Path:
-    path = Path(value).expanduser()
-    if not path.is_absolute():
-        path = root / path
-    return path.resolve(strict=False)
-
-
-def is_inside_root(root: Path, path: Path) -> bool:
-    resolved_root = root.resolve(strict=False)
-    resolved_path = path.resolve(strict=False)
-    if resolved_path == resolved_root:
-        return True
-    try:
-        resolved_path.relative_to(resolved_root)
-    except ValueError:
-        return False
-    return True
-
-
-def assert_inside_root(root: Path, path: Path, label: str = "path") -> Path:
-    if not is_inside_root(root, path):
-        resolved_root = root.resolve(strict=False)
-        resolved_path = path.resolve(strict=False)
-        raise SystemExit(
-            f"{label} fora do repo bloqueado: {resolved_path}\n"
-            f"Caminhos devem ficar dentro de {resolved_root}."
-        )
-    return path.resolve(strict=False)
-
-
-def relative_to_root(root: Path, path: Path) -> str:
-    try:
-        return str(path.resolve(strict=False).relative_to(root)).replace("\\", "/")
-    except ValueError:
-        return str(path.resolve(strict=False)).replace("\\", "/")
-
-
-def normalize_path_key(path: Path) -> str:
-    return os.path.normcase(str(path.resolve(strict=False)))
-
-
-def to_posix(path: str | Path) -> str:
-    return str(path).replace("\\", "/") if path else ""
 
 
 def load_memory(root: Path) -> list[dict[str, Any]]:
