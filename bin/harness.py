@@ -44,6 +44,29 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from harness_core.compat import compatibility_manifest  # noqa: E402
+from harness_core.config import (  # noqa: E402
+    active_profile,
+    active_profile_name,
+    config_bool,
+    evaluation_policy,
+    failure_policy,
+    github_config,
+    operation_profiles,
+    review_policy,
+    telegram_config,
+)
+from harness_core.defaults import (  # noqa: E402
+    CONTEXT_KINDS,
+    DEFAULT_EVALUATION_POLICY,
+    DEFAULT_FAILURE_POLICY,
+    DEFAULT_GITHUB_CONFIG,
+    DEFAULT_OPERATION_PROFILES,
+    DEFAULT_PROTECTED_BRANCHES,
+    DEFAULT_REVIEW_POLICY,
+    DEFAULT_TELEGRAM_CONFIG,
+    SECRET_PATTERNS,
+    SECURITY_EXCLUDED_DIRS,
+)
 from harness_core.paths import (  # noqa: E402
     agent_registry_path,
     artifacts_index_path,
@@ -101,149 +124,6 @@ from harness_core.storage import (  # noqa: E402
 )
 
 VERSION = "0.3.0"
-DEFAULT_PROTECTED_BRANCHES = ["main", "master", "production"]
-DEFAULT_OPERATION_PROFILES = {
-    "fast": {
-        "description": "Loop curto para feedback rapido.",
-        "sensor_tier": "quick",
-        "review": "parallel",
-        "max_fix_attempts": 1,
-        "time_budget_minutes": 30,
-    },
-    "balanced": {
-        "description": "Padrao para trabalho diario.",
-        "sensor_tier": "affected",
-        "review": "parallel",
-        "max_fix_attempts": 2,
-        "time_budget_minutes": 90,
-    },
-    "standard": {
-        "description": "Alias documentado para trabalho diario equilibrado.",
-        "sensor_tier": "full",
-        "review": "parallel",
-        "max_fix_attempts": 2,
-        "time_budget_minutes": 90,
-    },
-    "strict": {
-        "description": "Mais rigor para areas sensiveis.",
-        "sensor_tier": "full",
-        "review": "parallel",
-        "max_fix_attempts": 3,
-        "time_budget_minutes": 180,
-    },
-    "deep": {
-        "description": "Alias documentado para revisao profunda.",
-        "sensor_tier": "full",
-        "review": "parallel",
-        "max_fix_attempts": 3,
-        "time_budget_minutes": 180,
-    },
-    "release": {
-        "description": "Fechamento antes de publicar.",
-        "sensor_tier": "all",
-        "review": "parallel",
-        "max_fix_attempts": 3,
-        "time_budget_minutes": 240,
-    },
-}
-DEFAULT_FAILURE_POLICY = {
-    "max_fix_attempts": 3,
-    "auto_fix_brief": True,
-    "p0_blocks": True,
-    "p1_blocks": True,
-    "p2_blocks": False,
-}
-DEFAULT_GITHUB_CONFIG = {
-    "repo": "",
-    "remote": "origin",
-    "default_base": "main",
-}
-SECRET_PATTERNS = [
-    ("private_key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE" r" KEY-----")),
-    ("telegram_bot_token", re.compile(r"\b\d{8,}:[A-Za-z0-9_-]{30,}\b")),
-    ("openai_key", re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b")),
-    ("github_token", re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b")),
-    ("slack_token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{20,}\b")),
-    (
-        "secret_assignment",
-        re.compile(
-            r"\b(?:API_KEY|TOKEN|SECRET|PASSWORD|PRIVATE_KEY)\b\s*[:=]\s*['\"]?"
-            r"(?!<|example|changeme|your-|novo-token|telegram-bot-token|openai-api-key)"
-            r"[A-Za-z0-9_./:+-]{16,}",
-            re.IGNORECASE,
-        ),
-    ),
-]
-SECURITY_EXCLUDED_DIRS = {
-    ".git",
-    ".harness",
-    ".pytest_cache",
-    "__pycache__",
-    "node_modules",
-    ".venv",
-    "venv",
-    "env",
-    "dist",
-    "build",
-}
-CONTEXT_KINDS = [
-    "context",
-    "domain-context",
-    "prd",
-    "issue",
-    "architecture",
-    "infrastructure",
-    "security",
-    "testing",
-    "refactor-plan",
-    "decision",
-    "adr",
-    "guardrail",
-    "other",
-]
-DEFAULT_EVALUATION_POLICY = {
-    "mode": "spawned_agent",
-    "fork_context": False,
-    "input_scope": "evaluator_agent_handoff",
-}
-DEFAULT_REVIEW_POLICY = {
-    "enabled": True,
-    "mode": "spawned_agent",
-    "fork_context": False,
-    "skill": "greptile-review",
-    "input_scope": "greptile_reviewer_handoff",
-    "blocking_findings": {
-        "p0": True,
-        "p1_in_changed_surface": True,
-        "p2": False,
-    },
-}
-DEFAULT_TELEGRAM_CONFIG = {
-    "enabled": False,
-    "token_env": "HARNESS_TELEGRAM_BOT_TOKEN",
-    "chat_ids": [],
-    "allowed_chat_ids": [],
-    "notify_events": [
-        "run_started",
-        "sensors_completed",
-        "evaluation_brief_created",
-        "evaluation_recorded",
-        "fix_brief_created",
-        "report_created",
-    ],
-    "allow_task_creation": True,
-    "allow_remote_execution": False,
-    "download_media": True,
-    "max_download_bytes": 20 * 1024 * 1024,
-    "openai_media": {
-        "enabled": False,
-        "api_key_env": "OPENAI_API_KEY",
-        "audio_model": "gpt-4o-mini-transcribe",
-        "vision_model": "gpt-4.1-mini",
-        "transcribe_audio": True,
-        "describe_images": True,
-    },
-}
 
 class HarnessError(Exception):
     """User-facing CLI error without a Python traceback."""
@@ -290,100 +170,6 @@ def require_init(root: Path) -> None:
 def load_config(root: Path) -> dict[str, Any]:
     require_init(root)
     return read_json(config_path(root), {})
-
-
-def evaluation_policy(config: dict[str, Any]) -> dict[str, Any]:
-    policy = dict(DEFAULT_EVALUATION_POLICY)
-    policy.update(config.get("evaluation_policy", {}))
-    return policy
-
-
-def review_policy(config: dict[str, Any]) -> dict[str, Any]:
-    policy = dict(DEFAULT_REVIEW_POLICY)
-    configured = config.get("review_policy", {})
-    if isinstance(configured, dict):
-        blocking = dict(DEFAULT_REVIEW_POLICY["blocking_findings"])
-        blocking.update(configured.get("blocking_findings", {}))
-        policy.update(configured)
-        policy["blocking_findings"] = blocking
-    return policy
-
-
-def failure_policy(config: dict[str, Any]) -> dict[str, Any]:
-    policy = dict(DEFAULT_FAILURE_POLICY)
-    configured = config.get("failure_policy", {})
-    if isinstance(configured, dict):
-        policy.update(configured)
-    return policy
-
-
-def github_config(config: dict[str, Any]) -> dict[str, Any]:
-    configured = config.get("github", {})
-    return deep_merge(DEFAULT_GITHUB_CONFIG, configured if isinstance(configured, dict) else {})
-
-
-def operation_profiles(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    profiles = {name: dict(value) for name, value in DEFAULT_OPERATION_PROFILES.items()}
-    configured = config.get("operation_profiles", {})
-    if isinstance(configured, dict):
-        for name, value in configured.items():
-            if isinstance(value, dict):
-                base = dict(profiles.get(str(name), {}))
-                base.update(value)
-                profiles[str(name)] = base
-    return profiles
-
-
-def active_profile_name(config: dict[str, Any], requested: str | None = None) -> str:
-    profiles = operation_profiles(config)
-    name = requested or str(config.get("active_profile") or "balanced")
-    if name not in profiles:
-        raise SystemExit(f"Profile desconhecido: {name}. Use `profile list`.")
-    return name
-
-
-def active_profile(config: dict[str, Any], requested: str | None = None) -> dict[str, Any]:
-    name = active_profile_name(config, requested)
-    profile = dict(operation_profiles(config)[name])
-    profile["name"] = name
-    return profile
-
-
-def config_bool(value: Any, default: bool = False) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "off"}:
-            return False
-    return bool(value)
-
-
-def deep_merge(defaults: dict[str, Any], overrides: dict[str, Any] | None) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    overrides = overrides or {}
-    for key, value in defaults.items():
-        if isinstance(value, dict):
-            configured = overrides.get(key, {})
-            result[key] = deep_merge(value, configured if isinstance(configured, dict) else {})
-        elif isinstance(value, list):
-            configured = overrides.get(key, value)
-            result[key] = list(configured) if isinstance(configured, list) else list(value)
-        else:
-            result[key] = overrides.get(key, value)
-    for key, value in overrides.items():
-        if key not in result:
-            result[key] = value
-    return result
-
-
-def telegram_config(config: dict[str, Any]) -> dict[str, Any]:
-    configured = config.get("telegram", {})
-    return deep_merge(DEFAULT_TELEGRAM_CONFIG, configured if isinstance(configured, dict) else {})
 
 
 def load_tasks(root: Path) -> list[TaskRecord]:

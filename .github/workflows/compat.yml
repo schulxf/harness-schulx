@@ -1,0 +1,19 @@
+name: skill-compat
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  skill-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Show compatibility manifest
+        run: python bin/harness.py compat manifest
+      - name: Run skill compatibility smoke
+        run: python bin/harness.py compat skill-smoke
+
