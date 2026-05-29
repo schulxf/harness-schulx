@@ -1,41 +1,84 @@
+// Agent pop-up: full info panel + a real interactive terminal (xterm.js) wired
+// to the agent's PTY over WebSocket. You can type, see live output, Ctrl+C, etc.
+import { Terminal } from "../assets/vendor/xterm/xterm.mjs";
+import { FitAddon } from "../assets/vendor/xterm/addon-fit.mjs";
+import { roleMeta, activityLabel, shortPath } from "./statemachine.js";
+import { frameForRole } from "./sprites.js";
+
+const THEME = {
+  background: "#0c100c",
+  foreground: "#e8e4d2",
+  cursor: "#d9a441",
+  selectionBackground: "#3a4a32",
+  black: "#1b211a", red: "#e15b4f", green: "#5cd06a", yellow: "#d9a441",
+  blue: "#54a7c7", magenta: "#9b84d8", cyan: "#4fb9a8", white: "#e8e4d2",
+  brightBlack: "#5b6356", brightRed: "#f08077", brightGreen: "#86e08f",
+  brightYellow: "#ecc46b", brightBlue: "#79c0db", brightMagenta: "#b6a4e6",
+  brightCyan: "#79d3c4", brightWhite: "#ffffff",
+};
+
 function canUseWs() {
   return window.location.protocol === "http:" || window.location.protocol === "https:";
 }
 
-function wsUrl(agentId, token) {
+function wsUrl(agentId, token, hub) {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const url = new URL(`${protocol}//${window.location.host}/ws/term`);
+  const baseUrl = hub && typeof hub.wsUrl === "function" ? hub.wsUrl("/ws/term") : "";
+  const url = new URL(baseUrl || `${protocol}//${window.location.host}/ws/term`);
   url.searchParams.set("agent", agentId);
   if (token) url.searchParams.set("token", token);
   return url.toString();
 }
 
-export class TerminalOverlay {
-  constructor(root, options = {}) {
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+export class AgentTerminal {
+  constructor(root, handlers = {}) {
     this.root = root;
-    this.mount = root.querySelector("#terminalMount");
-    this.title = root.querySelector("#terminalTitle");
-    this.status = root.querySelector("#terminalStatus");
-    this.input = root.querySelector("#terminalInput");
-    this.form = root.querySelector("#terminalInputForm");
-    this.reconnect = root.querySelector("#terminalReconnect");
-    this.closeButton = root.querySelector("#terminalClose");
-    this.onStatus = options.onStatus || (() => {});
+    this.handlers = handlers;
     this.socket = null;
     this.agent = null;
     this.repo = null;
     this.token = "";
-    this.xterm = null;
+    this.term = null;
+    this.fit = null;
+    this.connected = false;
 
-    this.closeButton.addEventListener("click", () => this.close());
-    this.reconnect.addEventListener("click", () => this.connect());
-    this.form.addEventListener("submit", (event) => {
-      event.preventDefault();
-      const value = this.input.value;
-      if (!value) return;
-      this.send(value.endsWith("\n") ? value : `${value}\n`);
-      this.input.value = "";
+    this.els = {
+      avatar: root.querySelector("#amAvatar"),
+      name: root.querySelector("#amName"),
+      sub: root.querySelector("#amSub"),
+      status: root.querySelector("#amStatus"),
+      info: root.querySelector("#amInfo"),
+      termTitle: root.querySelector("#amTermTitle"),
+      mount: root.querySelector("#amTerm"),
+    };
+
+    root.querySelectorAll("[data-close]").forEach((el) => el.addEventListener("click", () => this.close()));
+    root.querySelector("#amReconnect").addEventListener("click", () => this.connect());
+    root.querySelector("#amClear").addEventListener("click", () => this.term && this.term.clear());
+    root.querySelector("#amInterrupt").addEventListener("click", () => { this.sendInput("\x03"); this.focus(); });
+    root.querySelector("#amKill").addEventListener("click", () => this.kill());
+    window.addEventListener("resize", () => this.refit());
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !this.root.hidden) this.close(); });
+  }
+
+  ensureTerm() {
+    if (this.term) return;
+    this.term = new Terminal({
+      fontFamily: "'Cascadia Mono', 'Consolas', ui-monospace, monospace",
+      fontSize: 13,
+      cursorBlink: true,
+      convertEol: false,
+      scrollback: 5000,
+      theme: THEME,
     });
+    this.fit = new FitAddon();
+    this.term.loadAddon(this.fit);
+    this.term.open(this.els.mount);
+    this.term.onData((data) => this.sendInput(data));
   }
 
   open(agent, repo, token) {
@@ -43,88 +86,120 @@ export class TerminalOverlay {
     this.repo = repo;
     this.token = token || "";
     this.root.hidden = false;
-    this.title.textContent = `${agent.name || agent.id} / ${agent.cli || "cli"}`;
-    this.mount.textContent = "";
-    this.writeLine("Harness terminal");
-    this.writeLine(`Agent: ${agent.id}`);
-    this.writeLine(`Repo: ${repo.root}`);
-    this.writeLine("Connected terminal stream");
+    this.renderHeader();
+    this.ensureTerm();
+    requestAnimationFrame(() => { this.refit(); this.focus(); });
     this.connect();
-    window.setTimeout(() => this.input.focus(), 50);
   }
 
-  close() {
-    this.root.hidden = true;
-    if (this.socket) this.socket.close();
-    this.socket = null;
+  renderHeader() {
+    const a = this.agent;
+    const meta = roleMeta(a.role);
+    const frame = frameForRole(a.role);
+    this.els.avatar.style.cssText = `background-image:url('./assets/sprites/agents.png');background-size:600% 100%;background-position:${(frame / 5) * 100}% 0;`;
+    this.els.name.textContent = a.name || a.id;
+    this.els.sub.innerHTML = `<span style="color:${meta.color}">${esc(meta.label)}</span> · ${esc(activityLabel(a))}`;
+    this.els.termTitle.textContent = `${a.cli || "terminal"} — ${this.repo?.project || ""}`;
+    this.els.info.innerHTML = this.infoHtml(a);
+  }
+
+  infoHtml(a) {
+    const rows = [
+      ["ID", a.id],
+      ["Role", roleMeta(a.role).label],
+      ["State", a.state],
+      ["Sector", a.sector],
+      ["CLI", a.cli],
+      ["Task", `${a.task_id || "-"} ${a.task_title || ""}`.trim()],
+      ["PTY", a.pty_id || "-"],
+      ["CWD", shortPath(a.cwd || this.repo?.root)],
+      ["Transcript", shortPath(a.transcript_path)],
+    ];
+    return `
+      <div class="am-info-block">
+        <h3>Agent</h3>
+        <dl class="am-grid">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v || "-")}</dd>`).join("")}</dl>
+      </div>
+      ${a.speech ? `<div class="am-speech">“${esc(a.speech)}”</div>` : ""}
+      <div class="am-hint">Type directly in the terminal. <b>Ctrl+C</b> interrupts. Run <code>claude</code> or <code>codex</code> to start an LLM session.</div>`;
+  }
+
+  focus() { try { this.term && this.term.focus(); } catch (_) { /* */ } }
+
+  refit() {
+    if (!this.fit || this.root.hidden) return;
+    try {
+      this.fit.fit();
+      const { cols, rows } = this.term;
+      this.sendFrame({ type: "resize", cols, rows });
+    } catch (_) { /* mount not measurable yet */ }
+  }
+
+  setStatus(text, state) {
+    this.els.status.textContent = text;
+    this.els.status.dataset.state = state || "idle";
   }
 
   connect() {
     if (!this.agent) return;
-    if (this.socket) this.socket.close();
+    this.ensureTerm();
+    if (this.socket) { try { this.socket.close(); } catch (_) { /* */ } this.socket = null; }
     if (!canUseWs()) {
-      this.setStatus("Offline preview");
-      this.writeLine("WebSocket requires an http(s) hub origin.");
+      this.setStatus("Offline", "offline");
+      this.term.writeln("\x1b[33mWebSocket requires an http(s) hub origin.\x1b[0m");
       return;
     }
-    const url = wsUrl(this.agent.id, this.token);
-    this.setStatus("Connecting");
-    this.writeLine(`Connecting ${url}`);
+    this.setStatus("Connecting…", "connecting");
+    let socket;
     try {
-      this.socket = new WebSocket(url);
+      socket = new WebSocket(wsUrl(this.agent.id, this.token, this.handlers.hub));
     } catch (error) {
-      this.setStatus("Connect failed");
-      this.writeLine(String(error?.message || error));
+      this.setStatus("Failed", "error");
+      this.term.writeln(`\x1b[31m${String(error?.message || error)}\x1b[0m`);
       return;
     }
-    this.socket.addEventListener("open", () => {
-      this.setStatus("Connected");
-      this.writeJson({ type: "attach", agent: this.agent.id, token: this.token });
-      this.writeJson({ type: "resize", cols: 120, rows: 30 });
+    this.socket = socket;
+    socket.addEventListener("open", () => {
+      this.connected = true;
+      this.setStatus("Live", "live");
+      this.refit();
+      this.focus();
     });
-    this.socket.addEventListener("message", (message) => this.handleMessage(message.data));
-    this.socket.addEventListener("close", () => this.setStatus("Disconnected"));
-    this.socket.addEventListener("error", () => {
-      this.setStatus("Socket error");
-      this.writeLine("Terminal socket failed. The Node sidecar may not be running yet.");
+    socket.addEventListener("message", (m) => this.onFrame(m.data));
+    socket.addEventListener("close", () => {
+      this.connected = false;
+      this.setStatus("Disconnected", "offline");
+    });
+    socket.addEventListener("error", () => {
+      this.setStatus("No terminal", "error");
+      this.term.writeln("\r\n\x1b[31mNo live terminal for this agent.\x1b[0m");
+      this.term.writeln("\x1b[90mThe PTY only exists while the sidecar that spawned it runs,\x1b[0m");
+      this.term.writeln("\x1b[90mand the repo needs hub.allow_remote_execution = true.\x1b[0m");
     });
   }
 
-  send(data) {
-    this.writeLine(`> ${data.trimEnd()}`);
-    this.writeJson({ type: "input", data });
+  onFrame(data) {
+    let frame;
+    try { frame = JSON.parse(data); } catch (_) { this.term.write(String(data)); return; }
+    if (frame.type === "output") this.term.write(frame.data || "");
+    else if (frame.type === "exit") this.term.writeln(`\r\n\x1b[90m[process exited${frame.code != null ? `: ${frame.code}` : ""}]\x1b[0m`);
   }
 
-  writeJson(frame) {
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
-      this.writeLine(`queued ${JSON.stringify(frame)}`);
-      return;
-    }
-    this.socket.send(JSON.stringify(frame));
+  sendFrame(frame) {
+    if (this.socket && this.socket.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(frame));
   }
 
-  handleMessage(data) {
-    try {
-      const frame = JSON.parse(data);
-      if (frame.type === "output") this.write(frame.data || "");
-      else if (frame.type === "exit") this.writeLine(`process exited: ${frame.code ?? ""}`);
-      else this.writeLine(JSON.stringify(frame));
-    } catch (error) {
-      this.write(String(data));
-    }
+  sendInput(data) {
+    this.sendFrame({ type: "input", data });
   }
 
-  write(text) {
-    this.mount.textContent += text;
-    this.mount.scrollTop = this.mount.scrollHeight;
+  kill() {
+    if (this.agent && this.handlers.onKill) this.handlers.onKill(this.agent.id);
+    this.setStatus("Stopping…", "offline");
   }
 
-  writeLine(text) {
-    this.write(`${text}\n`);
-  }
-
-  setStatus(text) {
-    this.status.textContent = text;
-    this.onStatus(text);
+  close() {
+    this.root.hidden = true;
+    if (this.socket) { try { this.socket.close(); } catch (_) { /* */ } this.socket = null; }
   }
 }

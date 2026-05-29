@@ -21,7 +21,7 @@ def test_agent_registry_round_trip(tmp_path: Path) -> None:
     assert loaded["updated_at"] == "now"
     assert loaded["agents"][0] == {
         "id": "agent-1",
-        "cli": "codex",
+        "cli": "shell",
         "sector": "idle",
         "pty_id": "",
         "repo_root": str(tmp_path.resolve(strict=False)),
@@ -104,7 +104,7 @@ def test_upsert_agent_defaults_new_hub_metadata(tmp_path: Path) -> None:
         event_id="EV-1",
     )
 
-    assert agent["cli"] == "codex"
+    assert agent["cli"] == "shell"
     assert agent["sector"] == "implement"
     assert agent["pty_id"] == ""
     assert agent["repo_root"] == str(tmp_path.resolve(strict=False))

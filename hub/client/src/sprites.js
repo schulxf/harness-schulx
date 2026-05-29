@@ -1,60 +1,46 @@
-import { roleMeta, speechForAgent, stateForAgent } from "./statemachine.js";
+// Canvas agent sprite sheet (agents.png = 6 frames of 48x48, one per role).
+const SHEET_SRC = "./assets/sprites/agents.png";
+const FRAME = 48;
+const FRAMES = 6;
 
-let spriteSheetReady = false;
+const ROLE_FRAME = {
+  builder: 0, implementer: 0,
+  planner: 1,
+  reviewer: 2,
+  security: 3, auditor: 3,
+  research: 4, researcher: 4,
+  reporter: 5, operator: 5,
+};
 
-export function detectSpriteAssets() {
-  return new Promise((resolve) => {
-    const image = new Image();
-    image.onload = () => {
-      spriteSheetReady = true;
-      document.body.classList.add("has-agent-sheet");
-      resolve(true);
-    };
-    image.onerror = () => {
-      spriteSheetReady = false;
-      document.body.classList.remove("has-agent-sheet");
-      resolve(false);
-    };
-    image.src = "./assets/sprites/agents.png";
-  });
+const image = new Image();
+let ready = false;
+image.onload = () => { ready = true; };
+image.onerror = () => { ready = false; };
+image.src = SHEET_SRC;
+
+export function spritesReady() {
+  return ready;
 }
 
-export function createAgentElement(agent) {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "agent-token";
-  button.innerHTML = `
-    <span class="agent-bubble"></span>
-    <span class="agent-shadow" aria-hidden="true"></span>
-    <span class="agent-css-sprite" aria-hidden="true">
-      <span class="agent-head"></span>
-      <span class="agent-body"></span>
-      <span class="agent-arm-left"></span>
-      <span class="agent-arm-right"></span>
-      <span class="agent-leg-left"></span>
-      <span class="agent-leg-right"></span>
-    </span>
-  `;
-  updateAgentElement(button, agent, false);
-  return button;
+export function frameForRole(role) {
+  const f = ROLE_FRAME[String(role || "").toLowerCase()];
+  return Number.isInteger(f) ? f : 0;
 }
 
-export function updateAgentElement(element, agent, selected) {
-  const meta = roleMeta(agent.role);
-  element.dataset.agentId = agent.id;
-  element.dataset.role = agent.role || "operator";
-  element.dataset.state = stateForAgent(agent);
-  element.dataset.selected = selected ? "true" : "false";
-  element.style.setProperty("--agent-accent", meta.color);
-  element.setAttribute("aria-label", `${agent.name || agent.id}, ${meta.label}, ${stateForAgent(agent)}`);
-  element.title = `${agent.name || agent.id} - ${agent.task_id || agent.sector || meta.label}`;
-  const bubble = element.querySelector(".agent-bubble");
-  if (bubble) bubble.textContent = speechForAgent(agent);
-  if (spriteSheetReady) {
-    const sprite = element.querySelector(".agent-css-sprite");
-    if (sprite) {
-      const roleIndex = ["builder", "planner", "reviewer", "security", "research", "operator"].indexOf(String(agent.role || "").toLowerCase());
-      sprite.style.backgroundPosition = `${Math.min(0, -48 * Math.max(0, roleIndex))}px 0`;
-    }
+// Draw an agent centred horizontally at x, feet at y.
+export function drawAgentSprite(ctx, role, x, y, size, opts = {}) {
+  const bob = opts.bob || 0;
+  const top = y - size + bob;
+  const left = x - size / 2;
+  if (ready) {
+    const frame = frameForRole(role);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(image, frame * FRAME, 0, FRAME, FRAME, left, top, size, size);
+  } else {
+    // fallback blob until the sheet loads
+    ctx.fillStyle = opts.color || "#d9a441";
+    ctx.beginPath();
+    ctx.arc(x, top + size / 2, size * 0.32, 0, Math.PI * 2);
+    ctx.fill();
   }
 }

@@ -60,7 +60,6 @@ export class HubUI {
     this.inspectorTitle = document.getElementById("inspectorTitle");
     this.inspectorMeta = document.getElementById("inspectorMeta");
     this.inspectorBody = document.getElementById("inspectorBody");
-    this.viewToggle = document.getElementById("viewToggle");
     this.refreshButton = document.getElementById("refreshButton");
     this.openTerminalButton = document.getElementById("openTerminalButton");
     this.handlers = {
@@ -76,7 +75,6 @@ export class HubUI {
     };
 
     this.refreshButton.addEventListener("click", () => this.handlers.refresh());
-    this.viewToggle.addEventListener("click", () => this.handlers.toggleView());
     this.openTerminalButton.addEventListener("click", () => this.handlers.openTerminal());
     this.repoStrip.addEventListener("click", (event) => {
       const button = event.target.closest("[data-repo-id]");
@@ -97,10 +95,7 @@ export class HubUI {
     this.repoCount.textContent = `Repos ${world.repos.length}`;
     this.agentCount.textContent = `Agents ${agentTotal}`;
     this.eventCount.textContent = `Events ${world.events?.length || 0}`;
-    this.viewToggle.textContent = mode === "overworld" ? "Map" : "World";
-    this.stageHint.textContent = mode === "overworld"
-      ? "Overworld"
-      : `${selectedRepo?.project || "Repo map"}`;
+    this.stageHint.textContent = `${selectedRepo?.project || "Repo map"}`;
     this.renderRepoStrip(world, selectedRepo);
     this.renderInspector(world, selectedRepo, selectedAgent, selectedSector);
     this.openTerminalButton.disabled = !selectedAgent;
@@ -171,7 +166,8 @@ export class HubUI {
             </label>
             <label class="field-label">CLI
               <select class="field-control" name="cli">
-                ${option("codex", "Codex", "codex")}
+                ${option("shell", "PowerShell", "shell")}
+                ${option("codex", "Codex", "")}
                 ${option("claude", "Claude", "")}
               </select>
             </label>

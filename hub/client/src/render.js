@@ -1,133 +1,178 @@
-import { WORLD_HEIGHT, WORLD_WIDTH, pointInRect } from "./world.js";
-import { roleMeta } from "./statemachine.js";
+// Tile-based town renderer for a single repo map. Theme-aware via tilesets.
+import { drawTile, loadSheet, sheetReady, getTileset, TILESETS } from "./tiles.js";
+import { generateTown, TILE, COLS, ROWS, MAP_W, MAP_H } from "./mapgen.js";
 
-function tile(ctx, x, y, size, color) {
-  ctx.fillStyle = color;
-  ctx.fillRect(x, y, size, size);
+export const WORLD_WIDTH = MAP_W;
+export const WORLD_HEIGHT = 720;
+
+const townCache = new Map();
+
+export function ensureTown(repo) {
+  const id = repo?.id || repo?.root || "demo";
+  if (!townCache.has(id)) townCache.set(id, generateTown(repo));
+  return townCache.get(id);
 }
 
-function drawPixelGrid(ctx, theme) {
-  for (let x = 0; x < WORLD_WIDTH; x += 32) {
-    for (let y = 0; y < WORLD_HEIGHT; y += 32) {
-      const alternate = (x / 32 + y / 32) % 2 === 0;
-      tile(ctx, x, y, 32, alternate ? theme.ground : theme.groundAlt);
-      if ((x + y) % 128 === 0) {
-        ctx.fillStyle = "rgba(255,255,255,.08)";
-        ctx.fillRect(x + 5, y + 8, 4, 4);
-        ctx.fillRect(x + 18, y + 22, 3, 3);
-      }
-    }
+export function sheetKeyForRepo(repo) {
+  try {
+    const override = window.localStorage.getItem("hubTheme:" + (repo?.id || ""));
+    if (TILESETS[override]) return override;
+  } catch (_) { /* ignore */ }
+  const key = String(repo?.theme?.key || repo?.theme || "");
+  return key === "dungeon" || key === "tiny-dungeon" ? "tiny-dungeon" : "tiny-town";
+}
+
+const SECTOR_ACCENT = {
+  plan: "#d9a441", implement: "#54a7c7", review: "#9b84d8",
+  research: "#4fb9a8", security: "#e15b4f", report: "#58b86d", idle: "#cbb994",
+};
+
+function groundIndex(ts, cell) {
+  if (cell.t === "grass") return cell.v === 2 ? ts.ground.flower : cell.v === 1 ? ts.ground.detail : ts.ground.plain;
+  if (cell.t === "path") return ts.path;
+  if (cell.t === "plaza") return ts.usePlaza9 ? ts.plaza9[cell.e] : ts.path;
+  return ts.ground.plain;
+}
+
+function decoIndex(ts, kind) {
+  if (kind === "small") return ts.tree.small;
+  if (kind === "bush") return ts.tree.bush;
+  if (kind === "tuft") return ts.tree.tuft;
+  if (kind === "mush") return ts.tree.mush;
+  return null;
+}
+
+function drawShadowEllipse(ctx, x, y, rx, ry) {
+  ctx.save();
+  ctx.fillStyle = "rgba(0,0,0,.22)";
+  ctx.beginPath();
+  ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawHouse(ctx, sheet, ts, b) {
+  const kitName = ts.sectorKit[b.key] || Object.keys(ts.kits)[0];
+  const kit = ts.kits[kitName] || ts.kits[Object.keys(ts.kits)[0]];
+  const x = b.col * TILE;
+  const y = b.row * TILE;
+  drawShadowEllipse(ctx, x + 1.5 * TILE, y + 3 * TILE - 4, TILE * 1.4, TILE * 0.4);
+  for (let dc = 0; dc < 3; dc += 1) {
+    drawTile(ctx, sheet, kit.roof[dc], x + dc * TILE, y, TILE);
+    drawTile(ctx, sheet, kit.eave[dc], x + dc * TILE, y + TILE, TILE);
+    drawTile(ctx, sheet, kit.wall[dc], x + dc * TILE, y + 2 * TILE, TILE);
   }
 }
 
-function drawRoads(ctx, sectors, theme) {
-  const idle = sectors.find((sector) => sector.key === "idle") || { x: 492, y: 300, w: 290, h: 180 };
-  const hub = { x: idle.x + idle.w / 2, y: idle.y + idle.h / 2 };
-  ctx.strokeStyle = theme.road;
-  ctx.lineWidth = 28;
-  ctx.lineCap = "square";
-  for (const sector of sectors) {
-    const center = { x: sector.x + sector.w / 2, y: sector.y + sector.h / 2 };
-    ctx.beginPath();
-    ctx.moveTo(hub.x, hub.y);
-    ctx.lineTo(center.x, hub.y);
-    ctx.lineTo(center.x, center.y);
-    ctx.stroke();
-  }
-  ctx.strokeStyle = "rgba(0,0,0,.22)";
+function drawTreeTall(ctx, sheet, ts, t) {
+  const top = t.orange ? ts.tree.tallTop.orange : ts.tree.tallTop.green;
+  const bot = t.orange ? ts.tree.tallBot.orange : ts.tree.tallBot.green;
+  const x = t.col * TILE;
+  const y = t.row * TILE;
+  drawShadowEllipse(ctx, x + TILE / 2, y + TILE - 3, TILE * 0.5, TILE * 0.22);
+  drawTile(ctx, sheet, bot, x, y, TILE);
+  drawTile(ctx, sheet, top, x, y - TILE, TILE);
+}
+
+export function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function pixelLabel(ctx, text, cx, topY, accent) {
+  ctx.save();
+  ctx.font = "700 12px 'Segoe UI', system-ui, sans-serif";
+  const w = Math.max(48, ctx.measureText(text).width + 16);
+  const x = Math.round(cx - w / 2);
+  ctx.fillStyle = "rgba(12,16,12,.82)";
+  roundRect(ctx, x, topY, w, 20, 5);
+  ctx.fill();
+  ctx.fillStyle = accent || "#f3ecd8";
+  ctx.fillRect(x, topY, 3, 20);
+  ctx.fillStyle = "#f3ecd8";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, cx, topY + 10);
+  ctx.restore();
+}
+
+function drawSelection(ctx, sector) {
+  ctx.save();
+  ctx.strokeStyle = "rgba(243,236,216,.9)";
   ctx.lineWidth = 3;
-  for (const sector of sectors) {
-    const center = { x: sector.x + sector.w / 2, y: sector.y + sector.h / 2 };
-    ctx.beginPath();
-    ctx.moveTo(hub.x, hub.y);
-    ctx.lineTo(center.x, hub.y);
-    ctx.lineTo(center.x, center.y);
-    ctx.stroke();
-  }
-}
-
-function drawSector(ctx, sector, theme, selected) {
-  const roofHeight = Math.min(38, sector.h * .28);
-  const tone = sector.tone || theme.roof;
-  ctx.fillStyle = "rgba(0,0,0,.24)";
-  ctx.fillRect(sector.x + 8, sector.y + sector.h - 2, sector.w, 18);
-  if (sector.key === "idle") {
-    ctx.fillStyle = "rgba(22, 42, 26, .74)";
-    ctx.fillRect(sector.x, sector.y, sector.w, sector.h);
-    ctx.strokeStyle = "#24361f";
-    ctx.lineWidth = 4;
-    ctx.strokeRect(sector.x, sector.y, sector.w, sector.h);
-  } else {
-    ctx.fillStyle = theme.wall;
-    ctx.fillRect(sector.x, sector.y + roofHeight, sector.w, sector.h - roofHeight);
-    ctx.fillStyle = tone;
-    ctx.fillRect(sector.x - 8, sector.y + 16, sector.w + 16, roofHeight);
-    ctx.fillStyle = "#101410";
-    ctx.fillRect(sector.x + sector.w / 2 - 18, sector.y + sector.h - 42, 36, 42);
-    ctx.fillStyle = "rgba(255,255,255,.16)";
-    ctx.fillRect(sector.x + 22, sector.y + roofHeight + 22, 36, 28);
-    ctx.fillRect(sector.x + sector.w - 58, sector.y + roofHeight + 22, 36, 28);
-    ctx.strokeStyle = selected ? "#f0ead7" : "#050706";
-    ctx.lineWidth = selected ? 7 : 4;
-    ctx.strokeRect(sector.x, sector.y + roofHeight, sector.w, sector.h - roofHeight);
-  }
-
-  ctx.fillStyle = "rgba(5,7,6,.82)";
-  ctx.fillRect(sector.x + 10, sector.y + 10, Math.min(sector.w - 20, 190), 28);
-  ctx.fillStyle = "#f0ead7";
-  ctx.font = "700 13px monospace";
-  ctx.textBaseline = "top";
-  ctx.fillText(sector.label || sector.key, sector.x + 18, sector.y + 17, sector.w - 28);
-}
-
-function drawPaths(ctx, paths) {
-  for (const path of paths || []) {
-    if (!path.points.length) continue;
-    ctx.strokeStyle = path.color || "#54a7c7";
-    ctx.lineWidth = 4;
-    ctx.setLineDash([10, 10]);
-    ctx.beginPath();
-    ctx.moveTo(path.from.x, path.from.y);
-    for (const point of path.points) ctx.lineTo(point.x, point.y);
-    ctx.stroke();
-    ctx.setLineDash([]);
-  }
-}
-
-function drawLegend(ctx, repo) {
-  ctx.fillStyle = "rgba(5,7,6,.82)";
-  ctx.fillRect(28, 28, 368, 72);
-  ctx.fillStyle = "#f0ead7";
-  ctx.font = "700 16px monospace";
-  ctx.fillText(repo.project || "Repository", 46, 46);
-  ctx.fillStyle = "#a7ad9b";
-  ctx.font = "12px monospace";
-  ctx.fillText(`${repo.branch || "no branch"} / ${repo.theme.label}`, 46, 68);
-  const roles = ["builder", "planner", "reviewer", "security"];
-  roles.forEach((role, index) => {
-    const meta = roleMeta(role);
-    ctx.fillStyle = meta.color;
-    ctx.fillRect(46 + index * 76, 84, 10, 10);
-    ctx.fillStyle = "#a7ad9b";
-    ctx.fillText(meta.label.slice(0, 7), 60 + index * 76, 82);
-  });
+  ctx.setLineDash([8, 6]);
+  roundRect(ctx, sector.x - 4, sector.y - 4, sector.w + 8, sector.h + 8, 8);
+  ctx.stroke();
+  ctx.restore();
 }
 
 export function drawRepoMap(ctx, repo, options = {}) {
-  ctx.clearRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
-  drawPixelGrid(ctx, repo.theme);
-  ctx.fillStyle = repo.theme.water;
-  ctx.fillRect(0, WORLD_HEIGHT - 58, WORLD_WIDTH, 58);
-  ctx.fillStyle = "rgba(255,255,255,.12)";
-  for (let x = 0; x < WORLD_WIDTH; x += 48) ctx.fillRect(x, WORLD_HEIGHT - 40 + (x % 96 ? 6 : 0), 28, 3);
-  drawRoads(ctx, repo.sectors, repo.theme);
-  drawPaths(ctx, options.paths || []);
-  for (const sector of repo.sectors) {
-    drawSector(ctx, sector, repo.theme, sector.key === options.selectedSector);
+  const town = ensureTown(repo);
+  const sheet = sheetKeyForRepo(repo);
+  const ts = getTileset(sheet);
+  loadSheet(sheet);
+
+  ctx.imageSmoothingEnabled = false;
+  ctx.clearRect(0, 0, MAP_W, MAP_H);
+
+  if (!sheetReady(sheet)) {
+    ctx.fillStyle = sheet === "tiny-dungeon" ? "#3a2b2b" : "#3b5f3f";
+    ctx.fillRect(0, 0, MAP_W, MAP_H);
+    ctx.fillStyle = "#f3ecd8";
+    ctx.font = "16px system-ui";
+    ctx.fillText("Loading tiles…", 24, 36);
+    return town;
   }
-  drawLegend(ctx, repo);
+
+  for (let r = 0; r < ROWS; r += 1) {
+    for (let c = 0; c < COLS; c += 1) {
+      drawTile(ctx, sheet, groundIndex(ts, town.ground[r][c]), c * TILE, r * TILE, TILE);
+    }
+  }
+
+  for (const d of town.deco) {
+    if (d.kind === "tree") continue;
+    if (d.kind === "sign") continue;
+    const idx = decoIndex(ts, d.kind);
+    if (idx != null) drawTile(ctx, sheet, idx, d.col * TILE, d.row * TILE, TILE);
+  }
+
+  if (options.selectedSector) {
+    const sector = town.sectors.find((s) => s.key === options.selectedSector);
+    if (sector) drawSelection(ctx, sector);
+  }
+
+  const objects = [
+    ...town.buildings.map((b) => ({ y: (b.row + 3) * TILE, type: "house", ref: b })),
+    ...town.deco.filter((d) => d.kind === "tree").map((t) => ({ y: (t.row + 1) * TILE, type: "tree", ref: t })),
+  ].sort((a, b) => a.y - b.y);
+  for (const obj of objects) {
+    if (obj.type === "house") drawHouse(ctx, sheet, ts, obj.ref);
+    else drawTreeTall(ctx, sheet, ts, obj.ref);
+  }
+
+  for (const d of town.deco) {
+    if (d.kind !== "sign") continue;
+    drawTile(ctx, sheet, ts.sign, d.col * TILE, d.row * TILE, TILE);
+    const icon = ts.sectorIcon[d.sector];
+    if (icon != null) drawTile(ctx, sheet, icon, d.col * TILE, (d.row - 1) * TILE, TILE);
+  }
+
+  for (const b of town.buildings) {
+    pixelLabel(ctx, b.label, (b.col + 1.5) * TILE, b.row * TILE - 18, SECTOR_ACCENT[b.key]);
+  }
+
+  return town;
 }
 
 export function hitTestSector(repo, point) {
-  return [...(repo?.sectors || [])].reverse().find((sector) => pointInRect(point, sector));
+  const town = ensureTown(repo);
+  return [...town.sectors].reverse().find((s) => (
+    point.x >= s.x && point.x <= s.x + s.w && point.y >= s.y && point.y <= s.y + s.h
+  ));
 }

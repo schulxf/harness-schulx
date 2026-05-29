@@ -98,7 +98,7 @@ function normalizeAgent(agent, repo, index) {
     id,
     name: String(agent?.name || agent?.label || id),
     role: String(agent?.role || "operator"),
-    cli: String(agent?.cli || repo.default_cli || "codex"),
+    cli: String(agent?.cli || repo.default_cli || "shell"),
     state: stateForAgent(agent),
     status: String(agent?.status || ""),
     sector: sectorForAgent(agent),

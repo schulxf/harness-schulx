@@ -130,10 +130,11 @@ def test_hub_config_merges_nested_defaults_and_copies_mutable_values() -> None:
 
     assert hub["allow_remote_execution"] is True
     assert hub["max_agents"] == DEFAULT_HUB_CONFIG["max_agents"]
-    assert hub["default_cli"] == "codex"
+    assert hub["default_cli"] == "shell"
     assert hub["clis"]["codex"]["cmd"] == ["codex"]
     assert hub["clis"]["codex"]["args"] == ["--model", "gpt-5"]
     assert hub["clis"]["claude"] == DEFAULT_HUB_CONFIG["clis"]["claude"]
+    assert hub["clis"]["shell"] == DEFAULT_HUB_CONFIG["clis"]["shell"]
     assert hub["pty"]["idle_timeout_s"] == 60
     assert hub["pty"]["scrollback_bytes"] == DEFAULT_HUB_CONFIG["pty"]["scrollback_bytes"]
 

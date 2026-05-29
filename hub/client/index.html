@@ -4,6 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Harness Hub Pixel Client</title>
+    <link rel="stylesheet" href="./assets/vendor/xterm/xterm.css">
     <link rel="stylesheet" href="./src/styles.css">
   </head>
   <body>
@@ -21,7 +22,7 @@
           <span id="repoCount" class="badge">Repos 0</span>
           <span id="agentCount" class="badge">Agents 0</span>
           <span id="eventCount" class="badge">Events 0</span>
-          <button id="viewToggle" class="control-button" type="button">World</button>
+          <button id="menuButton" class="control-button control-button--accent" type="button">Menu</button>
           <button id="refreshButton" class="control-button" type="button">Refresh</button>
           <button id="openTerminalButton" class="control-button" type="button" disabled>Shell</button>
         </div>
@@ -50,25 +51,35 @@
       </main>
     </div>
 
-    <div id="terminalOverlay" class="terminal-overlay" hidden>
-      <div class="terminal-window" role="dialog" aria-modal="true" aria-labelledby="terminalTitle">
-        <div class="terminal-titlebar">
-          <div>
-            <span class="section-kicker">Terminal</span>
-            <h2 id="terminalTitle">Agent terminal</h2>
+    <div id="menuRoot" class="menu-overlay" hidden></div>
+
+    <div id="agentModal" class="agent-modal" hidden>
+      <div class="agent-modal-scrim" data-close></div>
+      <div class="agent-modal-window" role="dialog" aria-modal="true" aria-labelledby="amName">
+        <header class="am-head">
+          <span class="am-avatar" id="amAvatar" aria-hidden="true"></span>
+          <div class="am-titles">
+            <h2 id="amName">Agent</h2>
+            <p id="amSub">role · state</p>
           </div>
-          <div class="terminal-actions">
-            <span id="terminalStatus" class="terminal-status">Disconnected</span>
-            <button id="terminalReconnect" class="control-button" type="button">Connect</button>
-            <button id="terminalClose" class="control-button" type="button">Close</button>
-          </div>
+          <span id="amStatus" class="am-status" data-state="idle">Disconnected</span>
+          <button id="amClose" class="control-button" type="button" data-close aria-label="Close">✕</button>
+        </header>
+        <div class="am-body">
+          <aside class="am-info" id="amInfo"></aside>
+          <section class="am-term">
+            <div class="am-term-bar">
+              <span class="am-term-title" id="amTermTitle">Terminal</span>
+              <div class="am-term-actions">
+                <button id="amInterrupt" class="control-button" type="button" title="Send Ctrl+C">Ctrl+C</button>
+                <button id="amClear" class="control-button" type="button">Clear</button>
+                <button id="amReconnect" class="control-button" type="button">Reconnect</button>
+                <button id="amKill" class="control-button control-button--danger" type="button">Stop agent</button>
+              </div>
+            </div>
+            <div id="amTerm" class="am-term-mount" tabindex="0"></div>
+          </section>
         </div>
-        <div id="terminalMount" class="terminal-mount" aria-live="polite"></div>
-        <form id="terminalInputForm" class="terminal-input-row">
-          <label class="sr-only" for="terminalInput">Terminal input</label>
-          <input id="terminalInput" autocomplete="off" spellcheck="false" placeholder="Type terminal input">
-          <button class="control-button" type="submit">Send</button>
-        </form>
       </div>
     </div>
 

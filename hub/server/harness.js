@@ -31,10 +31,13 @@ const PYTHON_ROLE_CHOICES = new Set([
 const DEFAULT_HUB_CONFIG = {
   allow_remote_execution: false,
   max_agents: 8,
-  default_cli: "codex",
+  default_cli: "shell",
   clis: {
-    codex: { cmd: ["codex"], args: [] },
-    claude: { cmd: ["claude"], args: [] },
+    // On Windows node-pty needs a real .exe; the LLM CLIs are .cmd shims, so we
+    // launch them through PowerShell (which also keeps the shell alive on exit).
+    shell: { cmd: ["powershell.exe"], args: ["-NoLogo"] },
+    claude: { cmd: ["powershell.exe"], args: ["-NoLogo", "-NoExit", "-Command", "claude"] },
+    codex: { cmd: ["powershell.exe"], args: ["-NoLogo", "-NoExit", "-Command", "codex"] },
   },
   pty: {
     idle_timeout_s: 1800,
@@ -493,7 +496,7 @@ function runHarnessCli(repoRoot, args, options) {
 }
 
 function normalizeCliDefinition(hubConfig, cliName) {
-  const name = String(cliName || hubConfig.default_cli || "codex");
+  const name = String(cliName || hubConfig.default_cli || DEFAULT_HUB_CONFIG.default_cli);
   const definition = hubConfig.clis[name];
   if (!definition) {
     throw new HttpError(400, "unknown_cli", { cli: name, known: Object.keys(hubConfig.clis) });
@@ -528,7 +531,7 @@ async function registerAgent(repoRoot, agent) {
     "--speech",
     agent.speech || "Agent spawned from harness-hub.",
     "--cli",
-    agent.cli || "codex",
+    agent.cli || DEFAULT_HUB_CONFIG.default_cli,
     "--sector",
     agent.sector || sectorForRole(agent.role),
     "--cwd",
@@ -590,6 +593,35 @@ async function addRepo(controlRoot, repoPath) {
   return loadHubRepoRegistry(controlRoot);
 }
 
+function setRemoteExecution(repoRoot, enabled) {
+  const cfgPath = path.join(harnessRoot(repoRoot), "config.json");
+  const cfg = readJson(cfgPath, {});
+  cfg.hub = { ...(cfg.hub && typeof cfg.hub === "object" ? cfg.hub : {}), allow_remote_execution: Boolean(enabled) };
+  writeJsonAtomic(cfgPath, cfg);
+  return cfg.hub;
+}
+
+// Create a brand-new project folder from zero: mkdir, harness init, enable the
+// hub remote-execution gate, and register it with the control repo.
+async function createProject(controlRoot, parentDir, name) {
+  const safeName = String(name || "").trim();
+  if (!safeName || /[\\/:*?"<>|]/.test(safeName)) {
+    throw new HttpError(400, "invalid_project_name");
+  }
+  const parent = path.resolve(String(parentDir || ""));
+  if (!fs.existsSync(parent) || !fs.statSync(parent).isDirectory()) {
+    throw new HttpError(400, "parent_dir_missing", { parent });
+  }
+  const target = path.join(parent, safeName);
+  fs.mkdirSync(target, { recursive: true });
+  if (!fs.existsSync(path.join(harnessRoot(target), "config.json"))) {
+    await runHarnessCli(target, ["init", "--name", safeName]);
+  }
+  setRemoteExecution(target, true);
+  await runHarnessCli(controlRoot, ["dashboard", "hub-add-repo", target]);
+  return { repo: target, repos: loadHubRepoRegistry(controlRoot) };
+}
+
 function makeAgentId(role) {
   const safeRole = String(role || "agent").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "agent";
   return `${safeRole}-${Date.now().toString(36)}-${crypto.randomBytes(3).toString("hex")}`;
@@ -600,6 +632,8 @@ module.exports = {
   DEFAULT_SECTORS,
   HttpError,
   addRepo,
+  createProject,
+  setRemoteExecution,
   appendHarnessEvent,
   augmentAgent,
   collectWorld,

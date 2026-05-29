@@ -4,6 +4,17 @@ function canUseApi() {
   return window.location.protocol === "http:" || window.location.protocol === "https:";
 }
 
+function configuredHubBase() {
+  const params = new URLSearchParams(window.location.search);
+  const configured = params.get("hub") || params.get("sidecar") || window.HARNESS_HUB_URL || "";
+  if (!configured) return "";
+  try {
+    return new URL(configured, window.location.origin).origin;
+  } catch (_error) {
+    return "";
+  }
+}
+
 async function fetchJson(url, options = {}) {
   const response = await fetch(url, { cache: "no-store", ...options });
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
@@ -15,6 +26,7 @@ export class HubClient {
     this.onStatus = options.onStatus || (() => {});
     this.onEvent = options.onEvent || (() => {});
     this.token = new URLSearchParams(window.location.search).get("token") || "";
+    this.baseUrl = configuredHubBase();
     this.eventSource = null;
     this.pollTimer = 0;
   }
@@ -30,9 +42,20 @@ export class HubClient {
     };
   }
 
+  apiUrl(path) {
+    if (!this.baseUrl) return path;
+    return new URL(path, this.baseUrl).toString();
+  }
+
+  wsUrl(path) {
+    const base = this.baseUrl ? new URL(this.baseUrl) : new URL(window.location.origin);
+    base.protocol = base.protocol === "https:" ? "wss:" : "ws:";
+    return new URL(path, base).toString();
+  }
+
   async loadWorld() {
     const candidates = canUseApi()
-      ? ["/api/world", "./hub-state.json", "./state.json"]
+      ? [this.apiUrl("/api/world"), "./hub-state.json", "./state.json"]
       : ["./hub-state.json", "./state.json"];
     for (const candidate of candidates) {
       try {
@@ -57,7 +80,7 @@ export class HubClient {
       return;
     }
 
-    const url = new URL("/api/events", window.location.origin);
+    const url = new URL(this.apiUrl("/api/events"), window.location.origin);
     url.searchParams.set("offset", String(offset || 0));
     if (this.token) url.searchParams.set("token", this.token);
     this.eventSource = new EventSource(url.toString());
@@ -105,7 +128,7 @@ export class HubClient {
 
   async postJson(path, payload = {}) {
     if (!canUseApi()) throw new Error("POST actions require the hub sidecar.");
-    const data = await fetchJson(path, {
+    const data = await fetchJson(this.apiUrl(path), {
       method: "POST",
       headers: this.headers({ "Content-Type": "application/json" }),
       body: JSON.stringify(payload),

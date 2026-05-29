@@ -5,7 +5,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "node server/index.js",
-    "check": "node --check server/index.js && node --check server/harness.js && node --check server/pty.js && node --check server/security.js && node --check client/src/main.js && node --check client/src/net.js && node --check client/src/world.js && node --check client/src/render.js && node --check client/src/overworld.js && node --check client/src/agents.js && node --check client/src/sprites.js && node --check client/src/pathfinding.js && node --check client/src/statemachine.js && node --check client/src/terminal.js && node --check client/src/ui.js",
+    "check": "node --check server/index.js && node --check server/harness.js && node --check server/pty.js && node --check server/security.js && node --check client/src/main.js && node --check client/src/net.js && node --check client/src/world.js && node --check client/src/render.js && node --check client/src/overworld.js && node --check client/src/agents.js && node --check client/src/sprites.js && node --check client/src/pathfinding.js && node --check client/src/statemachine.js && node --check client/src/terminal.js && node --check client/src/ui.js && node --check client/src/tiles.js && node --check client/src/mapgen.js && node --check client/src/menu.js",
     "test": "node --test server/*.test.js"
   },
   "dependencies": {

@@ -62,6 +62,19 @@ function sendJson(res, status, payload) {
   res.end(body);
 }
 
+function applyCors(req, res) {
+  const origin = req.headers.origin || "";
+  if (!security.originAllowed(origin)) {
+    return;
+  }
+  if (origin) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+  }
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Harness-Hub-Token");
+}
+
 function sendError(res, err) {
   const status = err && err.status ? err.status : 500;
   const payload = {
@@ -265,6 +278,17 @@ async function handleAddRepo(body, context) {
   return { ok: true, repos };
 }
 
+async function handleCreateProject(body, context) {
+  if (!body.parent) {
+    throw new harness.HttpError(400, "parent_dir_required");
+  }
+  if (!body.name) {
+    throw new harness.HttpError(400, "project_name_required");
+  }
+  const result = await harness.createProject(context.controlRoot, body.parent, body.name);
+  return { ok: true, ...result };
+}
+
 function writeSse(res, eventName, payload, id) {
   if (id) {
     res.write(`id: ${id}\n`);
@@ -307,7 +331,13 @@ function handleEvents(req, res, urlObject, context) {
 }
 
 async function routeRequest(req, res, context) {
+  applyCors(req, res);
   const urlObject = new URL(req.url, `http://${req.headers.host || "127.0.0.1"}`);
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, { "Cache-Control": "no-store" });
+    res.end();
+    return;
+  }
   if (req.method === "GET" && urlObject.pathname === "/api/world") {
     if (!localApiOnly(req, res)) {
       return;
@@ -340,6 +370,10 @@ async function routeRequest(req, res, context) {
     }
     if (urlObject.pathname === "/api/repos/add") {
       sendJson(res, 200, await handleAddRepo(body, context));
+      return;
+    }
+    if (urlObject.pathname === "/api/projects/create") {
+      sendJson(res, 201, await handleCreateProject(body, context));
       return;
     }
     sendJson(res, 404, { ok: false, error: "not_found" });

@@ -439,7 +439,7 @@ def test_dashboard_hub_configure_and_agent_sidecar_commands(tmp_path):
             "--state",
             "idle",
             "--cli",
-            "codex",
+            "shell",
             "--sector",
             "implement",
             "--pty-id",
@@ -457,8 +457,8 @@ def test_dashboard_hub_configure_and_agent_sidecar_commands(tmp_path):
     registry = read_json(repo / ".harness" / "agents" / "registry.json")
     agent_a = next(agent for agent in registry["agents"] if agent["id"] == "agent-a")
     assert agent_a["state"] == "done"
+    assert agent_a["cli"] == "shell"
     assert agent_a["pty_id"] == ""
-    assert agent_a["cli"] == "codex"
     messages = (repo / ".harness" / "agents" / "messages.jsonl").read_text(encoding="utf-8")
     assert "Revisa isso" in messages
     events = (repo / ".harness" / "events.jsonl").read_text(encoding="utf-8")
