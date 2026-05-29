@@ -203,17 +203,13 @@ from harness_core.task_store import (  # noqa: E402
     save_tasks,
     update_task,
 )
+from harness_core.task_text import extract_checklist, extract_out_of_scope, slugify  # noqa: E402
 from harness_core.telegram_policy import (  # noqa: E402
     telegram_chat_allowed,
     telegram_remote_execution_allowed,
 )
 
 VERSION = "0.3.0"
-
-def slugify(value: str) -> str:
-    slug = re.sub(r"[^a-zA-Z0-9]+", "-", value.strip().lower()).strip("-")
-    return slug[:80] or "untitled"
-
 
 def file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -2184,43 +2180,6 @@ def command_contract(args: argparse.Namespace) -> None:
         print("Documentos obrigatorios da task:")
         for doc in required_docs:
             print(f"- {doc}")
-
-
-def extract_checklist(text: str) -> list[str]:
-    criteria: list[str] = []
-    in_section = False
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.lower().startswith("## "):
-            heading = stripped.lower()
-            in_section = (
-                "acceptance" in heading
-                or "criteria" in heading
-                or "criterios" in heading
-                or "criterio" in heading
-                or "aceite" in heading
-            )
-            continue
-        if in_section and stripped.startswith("- ["):
-            item = re.sub(r"^- \[[ xX]\]\s*", "", stripped).strip()
-            if item and not item.lower().startswith("todo:"):
-                criteria.append(item)
-    return criteria
-
-
-def extract_out_of_scope(text: str) -> list[str]:
-    items: list[str] = []
-    in_section = False
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.lower().startswith("## "):
-            in_section = "out of scope" in stripped.lower() or "fora de escopo" in stripped.lower()
-            continue
-        if in_section and stripped.startswith("-"):
-            item = stripped.lstrip("-").strip()
-            if item and not item.lower().startswith("todo:"):
-                items.append(item)
-    return items
 
 
 def render_builder_brief(
