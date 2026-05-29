@@ -120,6 +120,13 @@ from harness_core.git_helpers import (  # noqa: E402
     is_git_repo,
     protected_branches,
 )
+from harness_core.hub_agents import (  # noqa: E402
+    hub_agent_name_for_role,
+    hub_agent_role_for_phase,
+    hub_agent_speech,
+    hub_agent_state_for_phase,
+    hub_repo_phase,
+)
 from harness_core.hub_registry import load_hub_repo_registry, save_hub_repo_registry  # noqa: E402
 from harness_core.memory import (  # noqa: E402
     load_memory,
@@ -207,8 +214,6 @@ from harness_core.status import (  # noqa: E402
     QUEUE_STATUS_ACTIVE,
     QUEUE_STATUS_DONE,
     QUEUE_STATUS_QUEUED,
-    TASK_STATUS_IN_PROGRESS,
-    TASK_STATUS_NEEDS_WORK,
     TASK_STATUS_SENSORS_PASSED,
     TASK_STATUSES_COMPLETE,
     TASK_STATUSES_READY_TO_START,
@@ -2407,84 +2412,6 @@ def hub_local_request_allowed(client_host: str) -> bool:
 
 def hub_action_authorized(client_host: str, supplied_token: str, action_token: str) -> bool:
     return hub_local_request_allowed(client_host) and bool(action_token and supplied_token == action_token)
-
-
-def hub_repo_phase(tasks: list[dict[str, Any]], queue: list[dict[str, Any]], security: dict[str, Any]) -> str:
-    if security.get("findings"):
-        return "security"
-    active = next((item for item in queue if item.get("status") == QUEUE_STATUS_ACTIVE), None)
-    active_task = None
-    if active and active.get("task_id"):
-        active_task = next((task for task in tasks if task.get("task_id") == active.get("task_id")), None)
-    if active_task:
-        status = str(active_task.get("status") or "")
-        if status in TASK_STATUSES_WORKING:
-            return "build"
-        if status == TASK_STATUS_SENSORS_PASSED:
-            return "review"
-        if status in TASK_STATUSES_COMPLETE:
-            return "report"
-    if any(task.get("status") in {TASK_STATUS_IN_PROGRESS, TASK_STATUS_NEEDS_WORK} for task in tasks):
-        return "build"
-    if any(task.get("status") == TASK_STATUS_SENSORS_PASSED for task in tasks):
-        return "review"
-    if any(item.get("status") == QUEUE_STATUS_QUEUED for item in queue):
-        return "queue"
-    if any(task.get("status") in TASK_STATUSES_COMPLETE for task in tasks):
-        return "report"
-    return "idle"
-
-
-def hub_agent_role_for_phase(phase: str) -> str:
-    if phase == "review":
-        return "reviewer"
-    if phase == "security":
-        return "security"
-    if phase == "report":
-        return "reporter"
-    if phase == "build":
-        return "builder"
-    return "operator"
-
-
-def hub_agent_name_for_role(role: str) -> str:
-    return {
-        "builder": "Builder",
-        "reviewer": "Reviewer",
-        "security": "Sentinel",
-        "reporter": "Archivist",
-        "operator": "Operator",
-    }.get(role, "Operator")
-
-
-def hub_agent_state_for_phase(phase: str, active_task_id: str) -> str:
-    if active_task_id and phase in {"build", "review", "security", "report"}:
-        return "working"
-    return "idle"
-
-
-def hub_agent_speech(
-    phase: str,
-    task: dict[str, Any] | None,
-    queue: list[dict[str, Any]],
-    security_report: dict[str, Any],
-) -> str:
-    task_id = str((task or {}).get("task_id") or "")
-    title = str((task or {}).get("title") or "").strip()
-    task_label = f"{task_id}: {title}" if task_id and title else task_id or title
-    if phase == "security":
-        count = len(security_report.get("findings") or [])
-        return f"Encontrei {count} alerta(s) de seguranca." if count else "Conferindo seguranca."
-    if phase == "review":
-        return f"Revisando {task_label}." if task_label else "Preparando revisao."
-    if phase == "report":
-        return f"Fechando relatorio de {task_label}." if task_label else "Organizando relatorios."
-    if phase == "build":
-        return f"Trabalhando em {task_label}." if task_label else "Implementando a task ativa."
-    queued = len([item for item in queue if item.get("status") == QUEUE_STATUS_QUEUED])
-    if queued:
-        return f"Livre. {queued} item(ns) na fila."
-    return "Livre. Patrulhando o laboratorio."
 
 
 HUB_REPO_STATE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
