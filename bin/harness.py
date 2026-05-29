@@ -52,6 +52,7 @@ from harness_core.builder_text import render_builder_brief, summarize_context  #
 from harness_core.checkpoints import (  # noqa: E402
     create_checkpoint,
     latest_checkpoint_path,
+    next_run_checkpoint_path,
     render_resume_brief,
 )
 from harness_core.clock import utc_now  # noqa: E402
@@ -1035,17 +1036,6 @@ def command_speed_pass(args: argparse.Namespace) -> None:
         gap=None,
     )
     command_evaluate(evaluate_args)
-
-
-def next_run_checkpoint_path(run_dir: Path) -> Path:
-    checkpoints = run_dir / "checkpoints"
-    existing = sorted(checkpoints.glob("checkpoint-*.json"))
-    numbers = []
-    for path in existing:
-        match = re.match(r"checkpoint-(\d+)\.json$", path.name)
-        if match:
-            numbers.append(int(match.group(1)))
-    return checkpoints / f"checkpoint-{(max(numbers) + 1) if numbers else 1:03d}.json"
 
 
 def command_checkpoint_create(args: argparse.Namespace) -> None:

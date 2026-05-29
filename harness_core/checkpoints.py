@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -64,6 +65,17 @@ def latest_checkpoint_path(root: Path, task_id: str) -> Path | None:
         return latest
     paths = sorted(checkpoints_root(root, task_id).glob("checkpoint-*.json"))
     return paths[-1] if paths else None
+
+
+def next_run_checkpoint_path(run_dir: Path) -> Path:
+    checkpoints = run_dir / "checkpoints"
+    existing = sorted(checkpoints.glob("checkpoint-*.json"))
+    numbers = []
+    for path in existing:
+        match = re.match(r"checkpoint-(\d+)\.json$", path.name)
+        if match:
+            numbers.append(int(match.group(1)))
+    return checkpoints / f"checkpoint-{(max(numbers) + 1) if numbers else 1:03d}.json"
 
 
 def latest_checkpoint_summary(root: Path, task_id: str | None) -> str:

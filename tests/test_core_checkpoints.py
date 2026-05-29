@@ -6,6 +6,7 @@ from harness_core.checkpoints import (
     create_checkpoint,
     latest_checkpoint_path,
     latest_checkpoint_summary,
+    next_run_checkpoint_path,
     render_resume_brief,
 )
 from harness_core.paths import contract_file_path
@@ -58,6 +59,15 @@ def test_latest_checkpoint_summary_prefers_summary_then_reason(tmp_path: Path) -
 
     assert latest_checkpoint_summary(tmp_path, "TASK-001") == "short status"
     assert latest_checkpoint_summary(tmp_path, None) == ""
+
+
+def test_next_run_checkpoint_path_uses_next_numeric_suffix(tmp_path: Path) -> None:
+    checkpoints = tmp_path / "checkpoints"
+    checkpoints.mkdir()
+    (checkpoints / "checkpoint-001.json").write_text("{}", encoding="utf-8")
+    (checkpoints / "checkpoint-009.json").write_text("{}", encoding="utf-8")
+
+    assert next_run_checkpoint_path(tmp_path) == checkpoints / "checkpoint-010.json"
 
 
 def test_render_resume_brief_recommends_contract_when_missing(tmp_path: Path) -> None:
