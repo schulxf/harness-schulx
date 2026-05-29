@@ -407,7 +407,7 @@ def test_dashboard_hub_repo_registry_and_manual_agent(tmp_path):
 
 
 def test_wmux_state_handles_unavailable_pipe(monkeypatch):
-    monkeypatch.setattr(harness, "wmux_pipe_path", lambda: r"\\.\pipe\missing-harness-test")
+    monkeypatch.setattr("harness_core.wmux.wmux_pipe_path", lambda: r"\\.\pipe\missing-harness-test")
     state = harness.collect_wmux_state()
     assert state["available"] is False
     assert state["error"]
