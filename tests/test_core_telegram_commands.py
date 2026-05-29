@@ -6,6 +6,7 @@ from harness_core.task_store import save_tasks
 from harness_core.telegram_commands import (
     handle_telegram_command,
     handle_telegram_update,
+    prepare_telegram_exec_update,
     telegram_status_summary,
     telegram_tasks_summary,
 )
@@ -77,3 +78,28 @@ def test_handle_telegram_update_rejects_unlisted_chat(tmp_path: Path) -> None:
 
     assert path is not None
     assert read_json(path, {})["action"] == "rejected_chat"
+
+
+def test_prepare_telegram_exec_update_extracts_codex_command_prompt(tmp_path: Path) -> None:
+    config = {"telegram": {"allowed_chat_ids": ["123"]}}
+
+    result = prepare_telegram_exec_update(
+        tmp_path,
+        config,
+        {
+            "update_id": 1,
+            "message": {
+                "message_id": 2,
+                "chat": {"id": 123},
+                "from": {"id": 123},
+                "text": "/codex implementar relatorio",
+            },
+        },
+        command_prefixes=("/codex",),
+        download_media=False,
+        reply_to_harness_commands=False,
+    )
+
+    assert result["ready"] is True
+    assert result["prompt_text"] == "implementar relatorio"
+    assert result["item"]["action"] == "inbox_saved"

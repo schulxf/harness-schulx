@@ -278,11 +278,12 @@ from harness_core.telegram_codex import (  # noqa: E402,F401
 from harness_core.telegram_commands import (  # noqa: E402,F401
     handle_telegram_command,
     handle_telegram_update,
+    prepare_telegram_exec_update,
     telegram_latest_plain_summary,
     telegram_status_summary,
     telegram_tasks_summary,
 )
-from harness_core.telegram_policy import (  # noqa: E402
+from harness_core.telegram_policy import (  # noqa: E402,F401
     telegram_chat_allowed,
     telegram_remote_execution_allowed,
 )
@@ -2194,73 +2195,6 @@ def command_telegram_listen(args: argparse.Namespace) -> None:
             if not processed:
                 print("Nenhuma mensagem nova.")
             return
-
-
-def prepare_telegram_exec_update(
-    root: Path,
-    config: dict[str, Any],
-    update: dict[str, Any],
-    *,
-    command_prefixes: tuple[str, ...],
-    download_media: bool,
-    reply_to_harness_commands: bool,
-) -> dict[str, Any]:
-    context = telegram_update_context(update)
-    stripped = context["stripped"]
-    result: dict[str, Any] = {
-        "update_id": context["update_id"],
-        "chat_id": context["chat_id"],
-        "stripped": stripped,
-        "path": None,
-        "item": None,
-        "prompt_text": "",
-        "ready": False,
-        "processed": False,
-        "harness_command": False,
-    }
-
-    if not telegram_chat_allowed(config, context["chat_id"]):
-        result["path"] = handle_telegram_update(root, config, update, reply=False)
-        return result
-
-    if stripped.startswith("/") and not stripped.lower().startswith(command_prefixes):
-        path = handle_telegram_update(
-            root,
-            config,
-            update,
-            create_tasks=False,
-            download_media=download_media,
-            reply=reply_to_harness_commands,
-        )
-        result["path"] = path
-        result["processed"] = bool(path)
-        result["harness_command"] = bool(path)
-        return result
-
-    path = handle_telegram_update(
-        root,
-        config,
-        update,
-        create_tasks=False,
-        download_media=download_media,
-        reply=False,
-    )
-    result["path"] = path
-    if not path:
-        return result
-
-    item = read_json(path, {})
-    if item.get("action") == "rejected_chat":
-        return result
-
-    prompt_text = item.get("prompt_text") or ""
-    if stripped.lower().startswith(command_prefixes):
-        prompt_text = stripped.partition(" ")[2].strip() or prompt_text
-
-    result["item"] = item
-    result["prompt_text"] = prompt_text
-    result["ready"] = True
-    return result
 
 
 def command_telegram_codex(args: argparse.Namespace) -> None:
