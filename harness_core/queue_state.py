@@ -12,6 +12,15 @@ from harness_core.status import QUEUE_STATUS_ACTIVE, QUEUE_STATUS_QUEUED
 from harness_core.storage import read_json, write_json
 
 
+def next_queue_id(root: Path) -> str:
+    numbers = []
+    for item in load_queue(root):
+        value = str(item.get("id", ""))
+        if value.startswith("QUEUE-") and value[6:].isdigit():
+            numbers.append(int(value[6:]))
+    return f"QUEUE-{(max(numbers) + 1) if numbers else 1:03d}"
+
+
 def load_queue(root: Path) -> list[QueueRecord]:
     return read_json(queue_path(root), [])
 

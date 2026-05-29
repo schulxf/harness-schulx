@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from harness_core.memory import load_memory, render_memory_context, save_memory
+from harness_core.memory import load_memory, next_memory_id, render_memory_context, save_memory
 
 
 def test_memory_round_trip(tmp_path: Path) -> None:
@@ -11,6 +11,12 @@ def test_memory_round_trip(tmp_path: Path) -> None:
     save_memory(tmp_path, entries)
 
     assert load_memory(tmp_path) == entries
+
+
+def test_next_memory_id_increments_existing_numeric_ids(tmp_path: Path) -> None:
+    save_memory(tmp_path, [{"id": "MEM-002"}, {"id": "manual"}, {"id": "MEM-010"}])
+
+    assert next_memory_id(tmp_path) == "MEM-011"
 
 
 def test_render_memory_context_filters_by_task_and_limits(tmp_path: Path) -> None:

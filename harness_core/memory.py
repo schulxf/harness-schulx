@@ -9,6 +9,15 @@ from harness_core.paths import memory_index_path
 from harness_core.storage import read_json, write_json
 
 
+def next_memory_id(root: Path) -> str:
+    numbers = []
+    for entry in load_memory(root):
+        value = str(entry.get("id", ""))
+        if value.startswith("MEM-") and value[4:].isdigit():
+            numbers.append(int(value[4:]))
+    return f"MEM-{(max(numbers) + 1) if numbers else 1:03d}"
+
+
 def load_memory(root: Path) -> list[dict[str, Any]]:
     return read_json(memory_index_path(root), [])
 

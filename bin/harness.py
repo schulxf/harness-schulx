@@ -54,6 +54,7 @@ from harness_core.artifacts import (  # noqa: E402
     load_artifacts,
     save_artifacts,
 )
+from harness_core.budgeting import task_budget  # noqa: E402
 from harness_core.clock import utc_now  # noqa: E402
 from harness_core.codex_exec import (  # noqa: E402
     build_codex_exec_argv,
@@ -69,7 +70,6 @@ from harness_core.codex_session import (  # noqa: E402
 )
 from harness_core.compat import compatibility_manifest  # noqa: E402
 from harness_core.config import (  # noqa: E402
-    active_profile,
     active_profile_name,
     config_bool,
     evaluation_policy,
@@ -119,7 +119,12 @@ from harness_core.git_helpers import (  # noqa: E402
 )
 from harness_core.http import http_json_post, http_multipart_post  # noqa: E402
 from harness_core.hub_registry import load_hub_repo_registry, save_hub_repo_registry  # noqa: E402
-from harness_core.memory import load_memory, render_memory_context, save_memory  # noqa: E402
+from harness_core.memory import (  # noqa: E402
+    load_memory,
+    next_memory_id,
+    render_memory_context,
+    save_memory,
+)
 from harness_core.paths import (  # noqa: E402
     agent_registry_path,
     artifacts_index_path,
@@ -162,6 +167,7 @@ from harness_core.plugin_registry import load_plugins, save_plugins  # noqa: E40
 from harness_core.queue_state import (  # noqa: E402
     active_queue_item,
     load_queue,
+    next_queue_id,
     next_queued_item,
     queue_counts,
     save_queue,
@@ -228,26 +234,6 @@ from harness_core.telegram_policy import (  # noqa: E402
 )
 
 VERSION = "0.3.0"
-
-
-def queue_item_id(task_id: str) -> str:
-    return f"Q-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{task_id.lower()}"
-
-
-def task_budget(task: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
-    requested = task.get("budget", {}).get("profile")
-    if requested and requested not in operation_profiles(config):
-        profile = {"name": requested}
-        if isinstance(config.get("profiles"), dict):
-            profile.update(config["profiles"].get(requested, {}))
-        if isinstance(config.get("budgets"), dict):
-            profile.update(config["budgets"].get(requested, {}))
-    else:
-        profile = active_profile(config, requested)
-    budget = dict(profile)
-    if isinstance(task.get("budget"), dict):
-        budget.update(task["budget"])
-    return budget
 
 
 def sync_agent_from_event(root: Path, event: dict[str, Any]) -> None:
@@ -1553,15 +1539,6 @@ def command_pick(args: argparse.Namespace) -> None:
     print("Nenhuma task pendente.")
 
 
-def next_queue_id(root: Path) -> str:
-    numbers = []
-    for item in load_queue(root):
-        match = re.match(r"QUEUE-(\d+)$", str(item.get("id", "")))
-        if match:
-            numbers.append(int(match.group(1)))
-    return f"QUEUE-{(max(numbers) + 1) if numbers else 1:03d}"
-
-
 def command_queue_add(args: argparse.Namespace) -> None:
     root = prepared_repo(args, safe_operation="queue add")
     task_id = None
@@ -1739,15 +1716,6 @@ def command_budget_list(args: argparse.Namespace) -> None:
             f"timeout_minutes={budget.get('timeout_minutes')} "
             f"max_fix_attempts={budget.get('max_fix_attempts')}"
         )
-
-
-def next_memory_id(root: Path) -> str:
-    numbers = []
-    for entry in load_memory(root):
-        match = re.match(r"MEM-(\d+)$", str(entry.get("id", "")))
-        if match:
-            numbers.append(int(match.group(1)))
-    return f"MEM-{(max(numbers) + 1) if numbers else 1:03d}"
 
 
 def command_memory_remember(args: argparse.Namespace) -> None:

@@ -20,6 +20,19 @@ def test_queue_counts_defaults_missing_status_to_queued(tmp_path: Path) -> None:
     assert queue_state.queue_counts(tmp_path) == {"active": 1, "queued": 1, "done": 1}
 
 
+def test_next_queue_id_increments_existing_numeric_ids(tmp_path: Path) -> None:
+    queue_state.save_queue(
+        tmp_path,
+        [
+            {"id": "QUEUE-002"},
+            {"id": "manual"},
+            {"id": "QUEUE-010"},
+        ],
+    )
+
+    assert queue_state.next_queue_id(tmp_path) == "QUEUE-011"
+
+
 def test_sorted_queue_items_uses_priority_created_at_and_id() -> None:
     items = [
         {"id": "QUEUE-003", "priority": 2, "created_at": "2026-01-02"},
