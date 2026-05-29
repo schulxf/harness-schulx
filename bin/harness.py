@@ -84,6 +84,7 @@ from harness_core.defaults import (  # noqa: E402
 )
 from harness_core.errors import HarnessError  # noqa: E402
 from harness_core.http import http_json_post, http_multipart_post  # noqa: E402
+from harness_core.memory import load_memory, render_memory_context, save_memory  # noqa: E402
 from harness_core.paths import (  # noqa: E402
     agent_registry_path,
     artifacts_index_path,
@@ -259,34 +260,6 @@ def task_budget(task: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
     if isinstance(task.get("budget"), dict):
         budget.update(task["budget"])
     return budget
-
-
-def load_memory(root: Path) -> list[dict[str, Any]]:
-    return read_json(memory_index_path(root), [])
-
-
-def save_memory(root: Path, entries: list[dict[str, Any]]) -> None:
-    write_json(memory_index_path(root), entries)
-
-
-def render_memory_context(root: Path, task_id: str | None = None, limit: int = 8) -> str:
-    entries = load_memory(root)
-    relevant = []
-    for entry in reversed(entries):
-        if task_id and entry.get("task_id") not in {None, "", task_id}:
-            continue
-        relevant.append(entry)
-        if len(relevant) >= limit:
-            break
-    if not relevant:
-        return "- Nenhuma memoria registrada ainda."
-    lines = []
-    for entry in relevant:
-        tags = ", ".join(entry.get("tags") or [])
-        suffix = f" [{tags}]" if tags else ""
-        task_suffix = f" ({entry.get('task_id')})" if entry.get("task_id") else ""
-        lines.append(f"- {entry.get('text', '').strip()}{task_suffix}{suffix}")
-    return "\n".join(lines)
 
 
 def load_plugins(root: Path) -> list[dict[str, Any]]:
