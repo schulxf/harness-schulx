@@ -561,7 +561,7 @@ def test_telegram_codex_requires_remote_execution_flag(tmp_path, monkeypatch):
     config["telegram"]["chat_ids"] = ["123"]
     config["telegram"]["allowed_chat_ids"] = ["123"]
     harness.write_json(repo / ".harness" / "config.json", config)
-    monkeypatch.setenv("HARNESS_TELEGRAM_BOT_TOKEN", "123456789:abcdefghijklmnopqrstuvwxyzABCDE")
+    monkeypatch.setenv("HARNESS_TELEGRAM_BOT_TOKEN", "telegram-test-token")
 
     with pytest.raises(SystemExit) as exc:
         run(["--repo", str(repo), "telegram", "codex", "--once"])
@@ -575,7 +575,7 @@ def test_telegram_bridge_codex_exec_requires_remote_execution_flag(tmp_path, mon
     config["telegram"]["chat_ids"] = ["123"]
     config["telegram"]["allowed_chat_ids"] = ["123"]
     harness.write_json(repo / ".harness" / "config.json", config)
-    monkeypatch.setenv("HARNESS_TELEGRAM_BOT_TOKEN", "123456789:abcdefghijklmnopqrstuvwxyzABCDE")
+    monkeypatch.setenv("HARNESS_TELEGRAM_BOT_TOKEN", "telegram-test-token")
 
     with pytest.raises(SystemExit) as exc:
         run(["--repo", str(repo), "telegram", "bridge", "--send-mode", "codex-exec", "--once"])
