@@ -31,7 +31,6 @@ import shutil
 import subprocess
 import tempfile
 import time
-import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
@@ -70,6 +69,8 @@ from harness_core.defaults import (  # noqa: E402
     DEFAULT_TELEGRAM_CONFIG,
     SECURITY_EXCLUDED_DIRS,
 )
+from harness_core.errors import HarnessError  # noqa: E402
+from harness_core.http import http_json_post, http_multipart_post  # noqa: E402
 from harness_core.paths import (  # noqa: E402
     agent_registry_path,
     artifacts_index_path,
@@ -143,10 +144,6 @@ from harness_core.telegram_policy import (  # noqa: E402
 )
 
 VERSION = "0.3.0"
-
-class HarnessError(Exception):
-    """User-facing CLI error without a Python traceback."""
-
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -808,85 +805,6 @@ def sync_agent_from_event(root: Path, event: dict[str, Any]) -> None:
         run_dir=str(event.get("run_dir") or ""),
         event_id=str(event.get("id") or ""),
     )
-
-
-def raise_harness_http_error(exc: urllib.error.HTTPError) -> None:
-    body = exc.read().decode("utf-8", errors="replace")
-    try:
-        parsed = json.loads(body)
-        detail = parsed.get("description") or parsed.get("error", {}).get("message") or body
-    except Exception:
-        detail = body or exc.reason
-    raise HarnessError(f"HTTP {exc.code}: {detail}") from exc
-
-
-def open_json_request(request: urllib.request.Request, *, timeout: int) -> dict[str, Any]:
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        raise_harness_http_error(exc)
-    except urllib.error.URLError as exc:
-        raise HarnessError(f"Erro de rede: {exc.reason}") from exc
-
-
-def http_json_post(
-    url: str,
-    payload: dict[str, Any],
-    headers: dict[str, str] | None = None,
-    timeout: int = 30,
-) -> dict[str, Any]:
-    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    request = urllib.request.Request(
-        url,
-        data=data,
-        headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            **(headers or {}),
-        },
-        method="POST",
-    )
-    return open_json_request(request, timeout=timeout)
-
-
-def http_multipart_post(
-    url: str,
-    fields: dict[str, str],
-    files: list[tuple[str, Path, str]],
-    headers: dict[str, str] | None = None,
-    timeout: int = 120,
-) -> dict[str, Any]:
-    boundary = f"----HarnessBoundary{uuid.uuid4().hex}"
-    chunks: list[bytes] = []
-    for name, value in fields.items():
-        chunks.append(f"--{boundary}\r\n".encode())
-        chunks.append(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode())
-        chunks.append(str(value).encode("utf-8"))
-        chunks.append(b"\r\n")
-    for name, path, content_type in files:
-        chunks.append(f"--{boundary}\r\n".encode())
-        disposition = (
-            f'Content-Disposition: form-data; name="{name}"; '
-            f'filename="{path.name}"\r\n'
-        )
-        chunks.append(disposition.encode("utf-8"))
-        chunks.append(f"Content-Type: {content_type}\r\n\r\n".encode())
-        chunks.append(path.read_bytes())
-        chunks.append(b"\r\n")
-    chunks.append(f"--{boundary}--\r\n".encode())
-    body = b"".join(chunks)
-    request = urllib.request.Request(
-        url,
-        data=body,
-        headers={
-            "Content-Type": f"multipart/form-data; boundary={boundary}",
-            "Accept": "application/json",
-            **(headers or {}),
-        },
-        method="POST",
-    )
-    return open_json_request(request, timeout=timeout)
 
 
 def telegram_token(config: dict[str, Any]) -> str:
