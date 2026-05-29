@@ -66,6 +66,16 @@ def latest_checkpoint_path(root: Path, task_id: str) -> Path | None:
     return paths[-1] if paths else None
 
 
+def latest_checkpoint_summary(root: Path, task_id: str | None) -> str:
+    if not task_id:
+        return ""
+    path = latest_checkpoint_path(root, task_id)
+    if not path:
+        return ""
+    payload = read_json(path, {})
+    return str(payload.get("summary") or payload.get("reason") or payload.get("created_at") or "")
+
+
 def render_resume_brief(
     root: Path,
     task_id: str,

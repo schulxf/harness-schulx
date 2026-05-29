@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from harness_core.checkpoints import create_checkpoint, latest_checkpoint_path, render_resume_brief
+from harness_core.checkpoints import (
+    create_checkpoint,
+    latest_checkpoint_path,
+    latest_checkpoint_summary,
+    render_resume_brief,
+)
 from harness_core.paths import contract_file_path
 from harness_core.storage import read_json, write_json
 from harness_core.task_store import save_tasks
@@ -45,6 +50,14 @@ def test_latest_checkpoint_path_prefers_latest_file(tmp_path: Path) -> None:
     path = create_checkpoint(tmp_path, "TASK-001", "manual")
 
     assert latest_checkpoint_path(tmp_path, "TASK-001") == path.parent / "latest.json"
+
+
+def test_latest_checkpoint_summary_prefers_summary_then_reason(tmp_path: Path) -> None:
+    save_task(tmp_path)
+    create_checkpoint(tmp_path, "TASK-001", "manual", extra={"summary": "short status"})
+
+    assert latest_checkpoint_summary(tmp_path, "TASK-001") == "short status"
+    assert latest_checkpoint_summary(tmp_path, None) == ""
 
 
 def test_render_resume_brief_recommends_contract_when_missing(tmp_path: Path) -> None:

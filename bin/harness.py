@@ -55,6 +55,7 @@ from harness_core.budgeting import task_budget  # noqa: E402
 from harness_core.checkpoints import (  # noqa: E402
     create_checkpoint,
     latest_checkpoint_path,
+    latest_checkpoint_summary,
     render_resume_brief,
 )
 from harness_core.clock import utc_now  # noqa: E402
@@ -2398,16 +2399,6 @@ def hub_repo_paths(args: argparse.Namespace) -> list[Path]:
         seen.add(key)
         paths.append(path)
     return paths
-
-
-def latest_checkpoint_summary(root: Path, task_id: str | None) -> str:
-    if not task_id:
-        return ""
-    path = latest_checkpoint_path(root, task_id)
-    if not path:
-        return ""
-    checkpoint = read_json(path, {})
-    return str(checkpoint.get("summary") or checkpoint.get("reason") or checkpoint.get("created_at") or "")
 
 
 def hub_local_request_allowed(client_host: str) -> bool:
