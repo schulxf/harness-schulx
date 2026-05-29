@@ -198,7 +198,6 @@ from harness_core.queue_state import (  # noqa: E402
     sorted_queue_items,
     update_queue_item,
 )
-from harness_core.records import TaskRecord  # noqa: E402
 from harness_core.repo_guard import (  # noqa: E402
     prepared_repo,
     require_existing_root,
@@ -233,11 +232,15 @@ from harness_core.storage import (  # noqa: E402
     write_text,
 )
 from harness_core.supervisor import supervisor_recommendation  # noqa: E402,F401
+from harness_core.task_intake import (  # noqa: E402,F401
+    create_task,
+    create_task_from_telegram_item,
+    first_heading_or_filename,
+    short_title,
+)
 from harness_core.task_store import (  # noqa: E402
     find_task,
     load_tasks,
-    next_task_id,
-    save_tasks,
     update_task,
 )
 from harness_core.task_text import extract_checklist, extract_out_of_scope, slugify  # noqa: E402
@@ -618,61 +621,6 @@ def command_ingest(args: argparse.Namespace) -> None:
     write_json(context_manifest_path(root), manifest)
     print(f"Ingerido {source.name} como {stored_path_rel}")
     print(f"sha256: {source_hash}")
-
-
-def first_heading_or_filename(path: Path, text: str) -> str:
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("#"):
-            return stripped.lstrip("#").strip() or path.stem
-    return path.stem.replace("-", " ").replace("_", " ").strip().title()
-
-
-def create_task(root: Path, title: str, body: str, source: str) -> TaskRecord:
-    task_id = next_task_id(root)
-    task_path = harness_root(root) / "tasks" / f"{task_id}-{slugify(title)}.md"
-    content = (
-        f"# {task_id} - {title}\n\n"
-        f"Status: planejada\n"
-        f"Origem: {source}\n"
-        f"Criada: {utc_now()}\n\n"
-        "## O que construir\n\n"
-        f"{body.strip() if body.strip() else 'TODO: descrever a fatia vertical.'}\n\n"
-        "## Criterios de aceite\n\n"
-        "- [ ] TODO: definir comportamento observavel.\n\n"
-        "## Fora de escopo\n\n"
-        "- TODO: definir o que esta task nao deve alterar.\n"
-    )
-    write_text(task_path, content)
-
-    task: TaskRecord = {
-        "task_id": task_id,
-        "title": title,
-        "status": "planned",
-        "source": to_posix(source) if source and source != "manual" else source,
-        "task_file": to_posix(task_path.relative_to(root)),
-        "created_at": utc_now(),
-        "updated_at": utc_now(),
-    }
-    tasks = load_tasks(root)
-    tasks.append(task)
-    save_tasks(root, tasks)
-    append_harness_event(root, "task_created", {"task_id": task_id, "title": title, "source": source})
-    return task
-
-
-def short_title(text: str, fallback: str = "Prompt do Telegram") -> str:
-    for line in text.splitlines():
-        cleaned = plain_clean(line)
-        if cleaned:
-            return cleaned[:90]
-    return fallback
-
-
-def create_task_from_telegram_item(root: Path, item: dict[str, Any]) -> dict[str, Any]:
-    title = short_title(item.get("prompt_text") or "", fallback=f"Telegram {item.get('id')}")
-    body = render_task_body_from_telegram(item)
-    return create_task(root, title, body, f"telegram:{item.get('id')}")
 
 
 def telegram_tasks_summary(root: Path) -> str:
