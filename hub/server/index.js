@@ -143,13 +143,25 @@ function safeStaticPath(clientRoot, requestPath) {
   return candidate;
 }
 
-function serveStatic(req, res, clientRoot, urlObject) {
+function serveStatic(req, res, clientRoot, urlObject, context) {
   const filePath = safeStaticPath(clientRoot, urlObject.pathname);
   if (!filePath || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
     sendJson(res, 404, { ok: false, error: "static_asset_not_found" });
     return;
   }
   const ext = path.extname(filePath).toLowerCase();
+  if (path.basename(filePath).toLowerCase() === "index.html" && context && context.token) {
+    const tokenScript = `<script>window.HARNESS_HUB_TOKEN=${JSON.stringify(context.token)};</script>`;
+    const bodyText = fs.readFileSync(filePath, "utf8").replace("</head>", `  ${tokenScript}\n  </head>`);
+    const body = Buffer.from(bodyText, "utf8");
+    res.writeHead(200, {
+      "Content-Type": MIME_TYPES[ext] || "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+      "Content-Length": body.length,
+    });
+    res.end(body);
+    return;
+  }
   res.writeHead(200, {
     "Content-Type": MIME_TYPES[ext] || "application/octet-stream",
     "Cache-Control": "no-store",
@@ -380,7 +392,7 @@ async function routeRequest(req, res, context) {
     return;
   }
   if (req.method === "GET") {
-    serveStatic(req, res, context.clientRoot, urlObject);
+    serveStatic(req, res, context.clientRoot, urlObject, context);
     return;
   }
   sendJson(res, 405, { ok: false, error: "method_not_allowed" });

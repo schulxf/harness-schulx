@@ -25,7 +25,7 @@ export class HubClient {
   constructor(options = {}) {
     this.onStatus = options.onStatus || (() => {});
     this.onEvent = options.onEvent || (() => {});
-    this.token = new URLSearchParams(window.location.search).get("token") || "";
+    this.token = new URLSearchParams(window.location.search).get("token") || window.HARNESS_HUB_TOKEN || "";
     this.baseUrl = configuredHubBase();
     this.eventSource = null;
     this.pollTimer = 0;
