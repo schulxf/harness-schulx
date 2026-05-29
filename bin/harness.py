@@ -224,12 +224,6 @@ from harness_core.sensors import (  # noqa: E402
     sensors_for_tier,
     split_sensor_command,
 )
-from harness_core.status import (  # noqa: E402
-    TASK_STATUS_SENSORS_PASSED,
-    TASK_STATUSES_COMPLETE,
-    TASK_STATUSES_READY_TO_START,
-    TASK_STATUSES_WORKING,
-)
 from harness_core.storage import (  # noqa: E402
     append_jsonl,
     read_json,
@@ -237,6 +231,7 @@ from harness_core.storage import (  # noqa: E402
     write_json,
     write_text,
 )
+from harness_core.supervisor import supervisor_recommendation  # noqa: E402,F401
 from harness_core.task_store import (  # noqa: E402
     find_task,
     load_tasks,
@@ -2174,27 +2169,6 @@ def command_dashboard_serve(args: argparse.Namespace) -> None:
             server.serve_forever()
     finally:
         server.server_close()
-
-
-def supervisor_recommendation(root: Path, item: dict[str, Any]) -> str:
-    task_id = item.get("task_id")
-    if not task_id:
-        return "Item de fila sem task. Use `queue add --create-task` ou crie uma task a partir do corpo."
-    task = find_task(root, task_id)
-    status = task.get("status")
-    if not contract_file_path(root, task_id).exists():
-        return f"Criar contrato: python {Path(__file__).resolve()} --repo {root} contract {task_id}"
-    if status in TASK_STATUSES_READY_TO_START:
-        return f"Iniciar: python {Path(__file__).resolve()} --repo {root} start {task_id}"
-    if status in TASK_STATUSES_WORKING:
-        contract = load_contract(root, task_id)
-        tier = fastest_available_sensor_tier(contract)
-        return f"Rodar sensores: python {Path(__file__).resolve()} --repo {root} sensors {task_id} --tier {tier} --reviewed"
-    if status == TASK_STATUS_SENSORS_PASSED:
-        return f"Avaliar: python {Path(__file__).resolve()} --repo {root} evaluate {task_id}"
-    if status in TASK_STATUSES_COMPLETE:
-        return f"Fechar fila: python {Path(__file__).resolve()} --repo {root} queue done {item.get('id')}"
-    return "Revisar status manualmente."
 
 
 def supervisor_tick(root: Path, args: argparse.Namespace) -> dict[str, Any]:
