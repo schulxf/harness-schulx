@@ -1,8 +1,8 @@
 """Tests for pure helper functions in harness.py."""
 from __future__ import annotations
 
-import re
 import json
+import re
 
 import pytest
 
@@ -127,6 +127,48 @@ def test_telegram_config_merges_defaults():
     assert policy["token_env"] == "HARNESS_TELEGRAM_BOT_TOKEN"
     assert policy["openai_media"]["enabled"] is True
     assert policy["openai_media"]["audio_model"]
+
+
+def test_telegram_allowlist_fails_closed_and_remote_execution_is_explicit():
+    assert harness.telegram_chat_allowed({"telegram": {}}, "123") is False
+    assert harness.telegram_chat_allowed({"telegram": {"chat_ids": ["123"]}}, "123") is True
+    assert (
+        harness.telegram_chat_allowed(
+            {"telegram": {"chat_ids": ["123"], "allowed_chat_ids": ["456"]}},
+            "123",
+        )
+        is False
+    )
+    assert (
+        harness.telegram_chat_allowed(
+            {"telegram": {"chat_ids": ["123"], "allowed_chat_ids": ["456"]}},
+            "456",
+        )
+        is True
+    )
+    assert harness.telegram_remote_execution_allowed({"telegram": {"chat_ids": ["123"]}}) is False
+    assert (
+        harness.telegram_remote_execution_allowed(
+            {"telegram": {"allow_remote_execution": True, "allowed_chat_ids": ["123"]}}
+        )
+        is True
+    )
+
+
+def test_hub_action_auth_requires_loopback_and_token():
+    assert harness.hub_local_request_allowed("127.0.0.1") is True
+    assert harness.hub_local_request_allowed("192.168.0.10") is False
+    assert harness.hub_action_authorized("127.0.0.1", "token", "token") is True
+    assert harness.hub_action_authorized("127.0.0.1", "", "token") is False
+    assert harness.hub_action_authorized("192.168.0.10", "token", "token") is False
+
+
+def test_read_jsonl_tail_reads_only_recent_records(tmp_path):
+    path = tmp_path / "events.jsonl"
+    for index in range(20):
+        harness.append_jsonl(path, {"index": index})
+
+    assert [item["index"] for item in harness.read_jsonl_tail(path, 3)] == [17, 18, 19]
 
 
 def test_render_plain_summary_is_nontechnical():

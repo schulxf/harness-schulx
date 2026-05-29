@@ -99,8 +99,9 @@ On Windows, you can also use the PowerShell wrapper:
 For development tests:
 
 ```powershell
-python -m pip install pytest
-python -m pytest tests/
+python -m pip install -r requirements-dev.txt
+python -m ruff check bin/harness.py harness_core tests
+python -m pytest tests/ --cov=harness --cov-report=term-missing
 ```
 
 ## Quick Start
@@ -553,6 +554,15 @@ python $HARNESS --repo $APP_REPO telegram configure `
   --allowed-chat-id "1832050069"
 ```
 
+Telegram saves inbound messages only from configured chats. Remote Codex
+execution is disabled by default; enable it separately only for trusted chats:
+
+```powershell
+python $HARNESS --repo $APP_REPO telegram configure `
+  --allow-remote-execution `
+  --allowed-chat-id "1832050069"
+```
+
 Send a test message:
 
 ```powershell
@@ -594,7 +604,8 @@ By default, bridge messages are queued in:
 ```
 
 Use `/codex <message>` in Telegram when you intentionally want to call Codex in
-parallel through `codex exec resume --last`.
+parallel through `codex exec resume --last`. This requires
+`allow_remote_execution=true` and an authorized chat.
 
 Read the full guide in [docs/TELEGRAM.md](docs/TELEGRAM.md).
 
@@ -665,7 +676,8 @@ remains local and deterministic.
 Run tests:
 
 ```powershell
-python -m pytest tests/
+python -m pip install -r requirements-dev.txt
+python -m pytest tests/ --cov=harness --cov-report=term-missing
 ```
 
 Compile-check the CLI:
@@ -674,7 +686,8 @@ Compile-check the CLI:
 python -m py_compile bin\harness.py
 ```
 
-The project intentionally has no runtime dependencies. Tests use `pytest`.
+The project intentionally has no runtime dependencies. Development checks use
+`pytest`, `pytest-cov` and `ruff`.
 
 ## Security Notes
 

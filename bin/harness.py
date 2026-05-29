@@ -19,6 +19,7 @@ if sys.version_info < (3, 10):
 
 import argparse
 import base64
+import copy
 import hashlib
 import html
 import json
@@ -37,6 +38,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from harness_core.records import QueueRecord, TaskRecord
+from harness_core.status import (
+    QUEUE_STATUS_ACTIVE,
+    QUEUE_STATUS_DONE,
+    QUEUE_STATUS_QUEUED,
+    TASK_STATUS_IN_PROGRESS,
+    TASK_STATUS_NEEDS_WORK,
+    TASK_STATUS_SENSORS_PASSED,
+    TASK_STATUSES_COMPLETE,
+    TASK_STATUSES_READY_TO_START,
+    TASK_STATUSES_WORKING,
+)
 
 VERSION = "0.3.0"
 HARNESS_DIR = ".harness"
@@ -183,7 +196,6 @@ DEFAULT_TELEGRAM_CONFIG = {
         "describe_images": True,
     },
 }
-
 
 class HarnessError(Exception):
     """User-facing CLI error without a Python traceback."""
@@ -418,15 +430,15 @@ def github_root(root: Path) -> Path:
     return harness_root(root) / "github"
 
 
-def load_tasks(root: Path) -> list[dict[str, Any]]:
+def load_tasks(root: Path) -> list[TaskRecord]:
     return read_json(tasks_index_path(root), [])
 
 
-def save_tasks(root: Path, tasks: list[dict[str, Any]]) -> None:
+def save_tasks(root: Path, tasks: list[TaskRecord]) -> None:
     write_json(tasks_index_path(root), tasks)
 
 
-def find_task(root: Path, task_id: str) -> dict[str, Any]:
+def find_task(root: Path, task_id: str) -> TaskRecord:
     for task in load_tasks(root):
         if task["task_id"] == task_id:
             return task
@@ -453,11 +465,11 @@ def next_task_id(root: Path) -> str:
     return f"TASK-{(max(numbers) + 1) if numbers else 1:03d}"
 
 
-def load_queue(root: Path) -> list[dict[str, Any]]:
+def load_queue(root: Path) -> list[QueueRecord]:
     return read_json(queue_path(root), [])
 
 
-def save_queue(root: Path, items: list[dict[str, Any]]) -> None:
+def save_queue(root: Path, items: list[QueueRecord]) -> None:
     write_json(queue_path(root), items)
 
 
@@ -473,7 +485,7 @@ def queue_counts(root: Path) -> dict[str, int]:
     return counts
 
 
-def sorted_queue_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def sorted_queue_items(items: list[QueueRecord]) -> list[QueueRecord]:
     return sorted(
         items,
         key=lambda item: (
@@ -484,21 +496,21 @@ def sorted_queue_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     )
 
 
-def next_queued_item(root: Path) -> dict[str, Any] | None:
+def next_queued_item(root: Path) -> QueueRecord | None:
     for item in sorted_queue_items(load_queue(root)):
-        if item.get("status") == "queued":
+        if item.get("status") == QUEUE_STATUS_QUEUED:
             return item
     return None
 
 
-def active_queue_item(root: Path) -> dict[str, Any] | None:
+def active_queue_item(root: Path) -> QueueRecord | None:
     for item in sorted_queue_items(load_queue(root)):
-        if item.get("status") == "active":
+        if item.get("status") == QUEUE_STATUS_ACTIVE:
             return item
     return None
 
 
-def update_queue_item(root: Path, item_id: str, **updates: Any) -> dict[str, Any]:
+def update_queue_item(root: Path, item_id: str, **updates: Any) -> QueueRecord:
     items = load_queue(root)
     for item in items:
         if item.get("id") == item_id:
@@ -927,6 +939,36 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
     return items
 
 
+def read_jsonl_tail(path: Path, limit: int) -> list[dict[str, Any]]:
+    if limit <= 0 or not path.exists():
+        return []
+    block_size = 8192
+    chunks: list[bytes] = []
+    newline_count = 0
+    with path.open("rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        position = handle.tell()
+        while position > 0 and newline_count <= limit:
+            read_size = min(block_size, position)
+            position -= read_size
+            handle.seek(position)
+            chunk = handle.read(read_size)
+            chunks.append(chunk)
+            newline_count += chunk.count(b"\n")
+    raw = b"".join(reversed(chunks)).decode("utf-8", errors="replace")
+    items: list[dict[str, Any]] = []
+    for line in raw.splitlines()[-limit:]:
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            items.append(payload)
+    return items
+
+
 def append_harness_event(
     root: Path,
     event_type: str,
@@ -960,7 +1002,7 @@ def append_harness_event(
 
 
 def read_recent_harness_events(root: Path, limit: int = 40, task_id: str | None = None) -> list[dict[str, Any]]:
-    events = read_jsonl(event_stream_path(root))
+    events = read_jsonl(event_stream_path(root)) if task_id else read_jsonl_tail(event_stream_path(root), limit)
     if task_id:
         events = [event for event in events if event.get("task_id") == task_id]
     if not events:
@@ -1121,7 +1163,7 @@ def sync_agent_from_event(root: Path, event: dict[str, Any]) -> None:
     upsert_agent(
         root,
         str(event.get("agent_id") or f"{role}-{task_id}").lower(),
-        name=hub_agent_name_for_role(role) if "hub_agent_name_for_role" in globals() else role.title(),
+        name=hub_agent_name_for_role(role),
         role=role,
         state=state,
         task_id=task_id,
@@ -1131,6 +1173,16 @@ def sync_agent_from_event(root: Path, event: dict[str, Any]) -> None:
         run_dir=str(event.get("run_dir") or ""),
         event_id=str(event.get("id") or ""),
     )
+
+
+def raise_harness_http_error(exc: urllib.error.HTTPError) -> None:
+    body = exc.read().decode("utf-8", errors="replace")
+    try:
+        parsed = json.loads(body)
+        detail = parsed.get("description") or parsed.get("error", {}).get("message") or body
+    except Exception:
+        detail = body or exc.reason
+    raise HarnessError(f"HTTP {exc.code}: {detail}") from exc
 
 
 def http_json_post(
@@ -1154,13 +1206,7 @@ def http_json_post(
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        try:
-            parsed = json.loads(body)
-            detail = parsed.get("description") or parsed.get("error", {}).get("message") or body
-        except Exception:
-            detail = body or exc.reason
-        raise HarnessError(f"HTTP {exc.code}: {detail}") from exc
+        raise_harness_http_error(exc)
     except urllib.error.URLError as exc:
         raise HarnessError(f"Erro de rede: {exc.reason}") from exc
 
@@ -1175,21 +1221,21 @@ def http_multipart_post(
     boundary = f"----HarnessBoundary{uuid.uuid4().hex}"
     chunks: list[bytes] = []
     for name, value in fields.items():
-        chunks.append(f"--{boundary}\r\n".encode("utf-8"))
-        chunks.append(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"))
+        chunks.append(f"--{boundary}\r\n".encode())
+        chunks.append(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode())
         chunks.append(str(value).encode("utf-8"))
         chunks.append(b"\r\n")
     for name, path, content_type in files:
-        chunks.append(f"--{boundary}\r\n".encode("utf-8"))
+        chunks.append(f"--{boundary}\r\n".encode())
         disposition = (
             f'Content-Disposition: form-data; name="{name}"; '
             f'filename="{path.name}"\r\n'
         )
         chunks.append(disposition.encode("utf-8"))
-        chunks.append(f"Content-Type: {content_type}\r\n\r\n".encode("utf-8"))
+        chunks.append(f"Content-Type: {content_type}\r\n\r\n".encode())
         chunks.append(path.read_bytes())
         chunks.append(b"\r\n")
-    chunks.append(f"--{boundary}--\r\n".encode("utf-8"))
+    chunks.append(f"--{boundary}--\r\n".encode())
     body = b"".join(chunks)
     request = urllib.request.Request(
         url,
@@ -1205,13 +1251,7 @@ def http_multipart_post(
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        try:
-            parsed = json.loads(body)
-            detail = parsed.get("description") or parsed.get("error", {}).get("message") or body
-        except Exception:
-            detail = body or exc.reason
-        raise HarnessError(f"HTTP {exc.code}: {detail}") from exc
+        raise_harness_http_error(exc)
     except urllib.error.URLError as exc:
         raise HarnessError(f"Erro de rede: {exc.reason}") from exc
 
@@ -1622,15 +1662,15 @@ def render_resume_brief(root: Path, task_id: str, checkpoint: dict[str, Any]) ->
     status = task.get("status")
     if not contract:
         next_steps.append(f"1. Criar contrato: python {Path(__file__).resolve()} --repo {root} contract {task_id}")
-    elif status in {"contracted", "planned"}:
+    elif status in TASK_STATUSES_READY_TO_START:
         next_steps.append(f"1. Iniciar run: python {Path(__file__).resolve()} --repo {root} start {task_id}")
-    elif status in {"in_progress", "sensors_failed", "needs_work"}:
+    elif status in TASK_STATUSES_WORKING:
         tier = fastest_available_sensor_tier(contract)
         next_steps.append(f"1. Rodar sensores rapidos: python {Path(__file__).resolve()} --repo {root} sensors {task_id} --tier {tier} --reviewed")
         next_steps.append(f"2. Gerar avaliacao/review: python {Path(__file__).resolve()} --repo {root} evaluate {task_id}")
-    elif status in {"sensors_passed"}:
+    elif status == TASK_STATUS_SENSORS_PASSED:
         next_steps.append(f"1. Registrar avaliacao ou gerar handoffs: python {Path(__file__).resolve()} --repo {root} evaluate {task_id}")
-    elif status in {"passed", "done"}:
+    elif status in TASK_STATUSES_COMPLETE:
         next_steps.append(f"1. Gerar relatorio: python {Path(__file__).resolve()} --repo {root} report {task_id}")
     else:
         next_steps.append("1. Rodar `status` e decidir a proxima etapa.")
@@ -2059,7 +2099,7 @@ def first_heading_or_filename(path: Path, text: str) -> str:
     return path.stem.replace("-", " ").replace("_", " ").strip().title()
 
 
-def create_task(root: Path, title: str, body: str, source: str) -> dict[str, Any]:
+def create_task(root: Path, title: str, body: str, source: str) -> TaskRecord:
     task_id = next_task_id(root)
     task_path = harness_root(root) / "tasks" / f"{task_id}-{slugify(title)}.md"
     content = (
@@ -2076,7 +2116,7 @@ def create_task(root: Path, title: str, body: str, source: str) -> dict[str, Any
     )
     write_text(task_path, content)
 
-    task = {
+    task: TaskRecord = {
         "task_id": task_id,
         "title": title,
         "status": "planned",
@@ -2115,7 +2155,15 @@ def telegram_chat_allowed(config: dict[str, Any], chat_id: str) -> bool:
     allowed = [str(item) for item in tconfig.get("allowed_chat_ids", [])]
     if not allowed:
         allowed = [str(item) for item in tconfig.get("chat_ids", [])]
-    return not allowed or str(chat_id) in set(allowed)
+    return bool(allowed) and str(chat_id) in set(allowed)
+
+
+def telegram_remote_execution_allowed(config: dict[str, Any]) -> bool:
+    tconfig = telegram_config(config)
+    allowed = [str(item) for item in tconfig.get("allowed_chat_ids", [])] or [
+        str(item) for item in tconfig.get("chat_ids", [])
+    ]
+    return config_bool(tconfig.get("allow_remote_execution"), False) and bool(allowed)
 
 
 def telegram_file_extension(file_path: str, fallback: str) -> str:
@@ -2486,7 +2534,6 @@ def summarize_tool_arguments(name: str, arguments: str) -> str:
 
 
 def mirror_message_from_codex_event(event: dict[str, Any], include_tools: bool) -> str | None:
-    timestamp = event.get("timestamp", "")
     event_type = event.get("type")
     payload = event.get("payload") or {}
 
@@ -2517,8 +2564,6 @@ def mirror_message_from_codex_event(event: dict[str, Any], include_tools: bool) 
             output = str(payload.get("output") or "").strip()
             first_lines = "\n".join(output.splitlines()[:6])
             return f"Codex ferramenta terminou:\n{first_lines[:1200]}" if first_lines else None
-    if include_tools and event_type:
-        return None if timestamp else None
     return None
 
 
@@ -2807,7 +2852,12 @@ def handle_telegram_update(
         "media": media,
         "media_analysis": media_analysis,
         "media_analysis_error": media_analysis_error,
-        "raw_update": update,
+        "raw_update_metadata": {
+            "update_id": update.get("update_id"),
+            "message_id": message.get("message_id"),
+            "date": message.get("date"),
+            "has_media": bool(media_kind),
+        },
     }
 
     if text.strip().startswith("/"):
@@ -4031,10 +4081,23 @@ def command_plugin_set_enabled(args: argparse.Namespace) -> None:
     raise SystemExit(f"Plugin nao encontrado: {args.name}")
 
 
+def render_plugin_command(template: str, root: Path, task_id: str, event: str) -> str:
+    values = {
+        "{repo}": str(root),
+        "{task_id}": task_id,
+        "{event}": event,
+    }
+    command = template
+    for marker, value in values.items():
+        command = command.replace(marker, value)
+    return command
+
+
 def command_plugin_run(args: argparse.Namespace) -> None:
     root = root_from_args(args)
     require_existing_root(root)
     require_init(root)
+    require_safe_branch(root, args, "plugin run")
     plugins = [
         plugin
         for plugin in load_plugins(root)
@@ -4045,9 +4108,13 @@ def command_plugin_run(args: argparse.Namespace) -> None:
     if not plugins:
         print("Nenhum plugin habilitado para este evento.")
         return
+    if not args.dry_run and not args.reviewed:
+        raise SystemExit(
+            "Execucao de plugin bloqueada: revise os comandos registrados e rode novamente com `plugin run --reviewed`."
+        )
     results = []
     for plugin in plugins:
-        command = str(plugin["command"]).format(repo=str(root), task_id=args.task_id or "", event=args.event)
+        command = render_plugin_command(str(plugin["command"]), root, args.task_id or "", args.event)
         argv = split_sensor_command(command)
         print(f"Plugin {plugin.get('name')}: {command}")
         if args.dry_run:
@@ -4088,6 +4155,13 @@ def iter_security_scan_files(root: Path, tracked_only: bool = True) -> list[Path
     return files
 
 
+def iter_security_inbox_files(root: Path) -> list[Path]:
+    inbox = telegram_inbox_root(root)
+    if not inbox.exists():
+        return []
+    return sorted(path for path in inbox.glob("*.json") if path.is_file())
+
+
 def is_probably_text(path: Path) -> bool:
     try:
         sample = path.read_bytes()[:4096]
@@ -4096,8 +4170,8 @@ def is_probably_text(path: Path) -> bool:
     return b"\0" not in sample
 
 
-def scan_file_for_secrets(root: Path, path: Path) -> list[dict[str, Any]]:
-    if any(part in SECURITY_EXCLUDED_DIRS for part in path.relative_to(root).parts):
+def scan_file_for_secrets(root: Path, path: Path, *, allow_harness: bool = False) -> list[dict[str, Any]]:
+    if not allow_harness and any(part in SECURITY_EXCLUDED_DIRS for part in path.relative_to(root).parts):
         return []
     if not is_probably_text(path):
         return []
@@ -4129,14 +4203,19 @@ def command_security_scan(args: argparse.Namespace) -> None:
     require_existing_root(root)
     require_init(root)
     files = iter_security_scan_files(root, tracked_only=not args.include_untracked)
+    inbox_files = iter_security_inbox_files(root)
     findings: list[dict[str, Any]] = []
     for file in files:
         if file.exists():
             findings.extend(scan_file_for_secrets(root, file))
+    for file in inbox_files:
+        if file.exists():
+            findings.extend(scan_file_for_secrets(root, file, allow_harness=True))
     report = {
         "created_at": utc_now(),
         "tracked_only": not args.include_untracked,
         "files_scanned": len(files),
+        "inbox_files_scanned": len(inbox_files),
         "findings": findings,
     }
     path = security_root(root) / "scan-latest.json"
@@ -4144,7 +4223,10 @@ def command_security_scan(args: argparse.Namespace) -> None:
     if args.json:
         print(json.dumps(report, indent=2, ensure_ascii=False))
     else:
-        print(f"Security scan: {len(findings)} finding(s), {len(files)} arquivo(s).")
+        print(
+            f"Security scan: {len(findings)} finding(s), "
+            f"{len(files)} arquivo(s), {len(inbox_files)} inbox Telegram."
+        )
         for finding in findings:
             print(f"- {finding['kind']} {finding['path']}:{finding['line']}")
         print(f"Relatorio: {path}")
@@ -4229,28 +4311,36 @@ def latest_checkpoint_summary(root: Path, task_id: str | None) -> str:
     return str(checkpoint.get("summary") or checkpoint.get("reason") or checkpoint.get("created_at") or "")
 
 
+def hub_local_request_allowed(client_host: str) -> bool:
+    return client_host in {"127.0.0.1", "::1", "localhost"}
+
+
+def hub_action_authorized(client_host: str, supplied_token: str, action_token: str) -> bool:
+    return hub_local_request_allowed(client_host) and bool(action_token and supplied_token == action_token)
+
+
 def hub_repo_phase(tasks: list[dict[str, Any]], queue: list[dict[str, Any]], security: dict[str, Any]) -> str:
     if security.get("findings"):
         return "security"
-    active = next((item for item in queue if item.get("status") == "active"), None)
+    active = next((item for item in queue if item.get("status") == QUEUE_STATUS_ACTIVE), None)
     active_task = None
     if active and active.get("task_id"):
         active_task = next((task for task in tasks if task.get("task_id") == active.get("task_id")), None)
     if active_task:
         status = str(active_task.get("status") or "")
-        if status in {"in_progress", "needs_work", "sensors_failed"}:
+        if status in TASK_STATUSES_WORKING:
             return "build"
-        if status == "sensors_passed":
+        if status == TASK_STATUS_SENSORS_PASSED:
             return "review"
-        if status in {"passed", "done"}:
+        if status in TASK_STATUSES_COMPLETE:
             return "report"
-    if any(task.get("status") in {"in_progress", "needs_work"} for task in tasks):
+    if any(task.get("status") in {TASK_STATUS_IN_PROGRESS, TASK_STATUS_NEEDS_WORK} for task in tasks):
         return "build"
-    if any(task.get("status") == "sensors_passed" for task in tasks):
+    if any(task.get("status") == TASK_STATUS_SENSORS_PASSED for task in tasks):
         return "review"
-    if any(item.get("status") == "queued" for item in queue):
+    if any(item.get("status") == QUEUE_STATUS_QUEUED for item in queue):
         return "queue"
-    if any(task.get("status") in {"passed", "done"} for task in tasks):
+    if any(task.get("status") in TASK_STATUSES_COMPLETE for task in tasks):
         return "report"
     return "idle"
 
@@ -4301,10 +4391,26 @@ def hub_agent_speech(
         return f"Fechando relatorio de {task_label}." if task_label else "Organizando relatorios."
     if phase == "build":
         return f"Trabalhando em {task_label}." if task_label else "Implementando a task ativa."
-    queued = len([item for item in queue if item.get("status") == "queued"])
+    queued = len([item for item in queue if item.get("status") == QUEUE_STATUS_QUEUED])
     if queued:
         return f"Livre. {queued} item(ns) na fila."
     return "Livre. Patrulhando o laboratorio."
+
+
+HUB_REPO_STATE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def collect_hub_repo_state_cached(root: Path, index: int = 0, ttl_seconds: float = 0.0) -> dict[str, Any]:
+    if ttl_seconds <= 0:
+        return collect_hub_repo_state(root, index)
+    key = f"{normalize_path_key(root)}::{index}"
+    now = time.monotonic()
+    cached = HUB_REPO_STATE_CACHE.get(key)
+    if cached and cached[0] > now:
+        return copy.deepcopy(cached[1])
+    state = collect_hub_repo_state(root, index)
+    HUB_REPO_STATE_CACHE[key] = (now + ttl_seconds, copy.deepcopy(state))
+    return state
 
 
 def collect_hub_repo_state(root: Path, index: int = 0) -> dict[str, Any]:
@@ -4334,17 +4440,17 @@ def collect_hub_repo_state(root: Path, index: int = 0) -> dict[str, Any]:
     tasks = load_tasks(root)
     queue = sorted_queue_items(load_queue(root))
     security_report = read_json(security_root(root) / "scan-latest.json", {})
-    active = next((item for item in queue if item.get("status") == "active"), None)
+    active = next((item for item in queue if item.get("status") == QUEUE_STATUS_ACTIVE), None)
     active_task_id = str(active.get("task_id") or "") if active else ""
     active_task = next((task for task in tasks if task.get("task_id") == active_task_id), None)
     if not active_task:
-        active_task = next((task for task in tasks if task.get("status") in {"in_progress", "needs_work", "sensors_failed"}), None)
+        active_task = next((task for task in tasks if task.get("status") in TASK_STATUSES_WORKING), None)
         active_task_id = str(active_task.get("task_id") or "") if active_task else ""
     phase = hub_repo_phase(tasks, queue, security_report)
     if not active_task:
         phase_statuses = {
-            "review": {"sensors_passed"},
-            "report": {"passed", "done"},
+            "review": {TASK_STATUS_SENSORS_PASSED},
+            "report": TASK_STATUSES_COMPLETE,
         }.get(phase, set())
         active_task = next(
             (task for task in reversed(tasks) if task.get("status") in phase_statuses),
@@ -4382,9 +4488,9 @@ def collect_hub_repo_state(root: Path, index: int = 0) -> dict[str, Any]:
         "latest_checkpoint": latest_checkpoint_summary(root, active_task_id),
         "counts": {
             "tasks": len(tasks),
-            "queued": len([item for item in queue if item.get("status") == "queued"]),
-            "active": len([item for item in queue if item.get("status") == "active"]),
-            "done": len([item for item in queue if item.get("status") == "done"]),
+            "queued": len([item for item in queue if item.get("status") == QUEUE_STATUS_QUEUED]),
+            "active": len([item for item in queue if item.get("status") == QUEUE_STATUS_ACTIVE]),
+            "done": len([item for item in queue if item.get("status") == QUEUE_STATUS_DONE]),
             "security_findings": len(security_report.get("findings") or []),
             "artifacts": len(collect_run_artifacts(root)),
             "unevaluated_runs": len(find_unevaluated_runs(root)),
@@ -4622,8 +4728,15 @@ def wmux_new_terminal(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def collect_dashboard_hub_state(paths: list[Path], action_token: str = "") -> dict[str, Any]:
-    repos = [collect_hub_repo_state(path, index) for index, path in enumerate(paths)]
+def collect_dashboard_hub_state(
+    paths: list[Path],
+    action_token: str = "",
+    cache_ttl_seconds: float = 0.0,
+) -> dict[str, Any]:
+    repos = [
+        collect_hub_repo_state_cached(path, index, cache_ttl_seconds)
+        for index, path in enumerate(paths)
+    ]
     return {
         "generated_at": utc_now(),
         "repo_count": len(repos),
@@ -4637,7 +4750,11 @@ def collect_dashboard_hub_state(paths: list[Path], action_token: str = "") -> di
 
 
 def render_dashboard_hub_html(state: dict[str, Any], refresh_seconds: int = 3) -> str:
-    initial_state = json.dumps(state, ensure_ascii=False).replace("</", "<\\/")
+    initial_state = (
+        json.dumps(state, ensure_ascii=False)
+        .replace("</", "<\\/")
+        .replace("<!--", "<\\!--")
+    )
     return f"""<!doctype html>
 <html lang="pt-BR">
 <head>
@@ -5511,7 +5628,10 @@ def render_dashboard_hub_html(state: dict[str, Any], refresh_seconds: int = 3) -
     }}
     async function refresh() {{
       try {{
-        const response = await fetch("hub-state.json?ts=" + Date.now(), {{ cache: "no-store" }});
+        const response = await fetch("hub-state.json?ts=" + Date.now(), {{
+          cache: "no-store",
+          headers: {{ "X-Harness-Hub-Token": hubState.action_token || "" }}
+        }});
         if (!response.ok) return;
         hubState = await response.json();
         render();
@@ -5813,7 +5933,12 @@ def command_dashboard_hub_serve(args: argparse.Namespace) -> None:
     require_init(root)
     paths = hub_repo_paths(args)
     action_token = uuid.uuid4().hex
-    initial_state = collect_dashboard_hub_state(paths, action_token=action_token)
+    cache_ttl_seconds = max(1.0, float(args.refresh_seconds) + 0.5)
+    initial_state = collect_dashboard_hub_state(
+        paths,
+        action_token=action_token,
+        cache_ttl_seconds=cache_ttl_seconds,
+    )
     directory = dashboard_hub_root(root)
     write_text(directory / "index.html", render_dashboard_hub_html(initial_state, args.refresh_seconds))
     write_json(directory / "hub-state.json", initial_state)
@@ -5838,24 +5963,41 @@ def command_dashboard_hub_serve(args: argparse.Namespace) -> None:
             return json.loads(raw.decode("utf-8"))
 
         def authorized(self, payload: dict[str, Any]) -> bool:
-            if self.client_address[0] not in {"127.0.0.1", "::1"}:
-                return False
             supplied = self.headers.get("X-Harness-Hub-Token") or str(payload.get("action_token") or "")
-            return bool(action_token and supplied == action_token)
+            return hub_action_authorized(self.client_address[0], supplied, action_token)
+
+        def local_request(self) -> bool:
+            return hub_local_request_allowed(self.client_address[0])
 
         def do_GET(self) -> None:  # noqa: N802 - stdlib hook
+            if not self.local_request():
+                self.send_json(403, {"ok": False, "error": "Hub local: acesso remoto bloqueado."})
+                return
             request_path = urllib.parse.urlparse(self.path).path
             if request_path in {"/hub-state.json", "/state.json"}:
-                state = collect_dashboard_hub_state(paths, action_token=action_token)
+                if not self.authorized({}):
+                    self.send_json(403, {"ok": False, "error": "Estado local nao autorizado."})
+                    return
+                state = collect_dashboard_hub_state(
+                    paths,
+                    action_token=action_token,
+                    cache_ttl_seconds=cache_ttl_seconds,
+                )
                 write_json(directory / "hub-state.json", state)
                 self.send_json(200, state)
                 return
             if request_path == "/wmux-state.json":
+                if not self.authorized({}):
+                    self.send_json(403, {"ok": False, "error": "Estado local nao autorizado."})
+                    return
                 self.send_json(200, collect_wmux_state())
                 return
             super().do_GET()
 
         def do_POST(self) -> None:  # noqa: N802 - stdlib hook
+            if not self.local_request():
+                self.send_json(403, {"ok": False, "error": "Hub local: acesso remoto bloqueado."})
+                return
             request_path = urllib.parse.urlparse(self.path).path
             if not request_path.startswith("/wmux/"):
                 self.send_error(404)
@@ -5941,15 +6083,15 @@ def supervisor_recommendation(root: Path, item: dict[str, Any]) -> str:
     status = task.get("status")
     if not contract_file_path(root, task_id).exists():
         return f"Criar contrato: python {Path(__file__).resolve()} --repo {root} contract {task_id}"
-    if status in {"planned", "contracted"}:
+    if status in TASK_STATUSES_READY_TO_START:
         return f"Iniciar: python {Path(__file__).resolve()} --repo {root} start {task_id}"
-    if status in {"in_progress", "sensors_failed", "needs_work"}:
+    if status in TASK_STATUSES_WORKING:
         contract = load_contract(root, task_id)
         tier = fastest_available_sensor_tier(contract)
         return f"Rodar sensores: python {Path(__file__).resolve()} --repo {root} sensors {task_id} --tier {tier} --reviewed"
-    if status == "sensors_passed":
+    if status == TASK_STATUS_SENSORS_PASSED:
         return f"Avaliar: python {Path(__file__).resolve()} --repo {root} evaluate {task_id}"
-    if status in {"passed", "done"}:
+    if status in TASK_STATUSES_COMPLETE:
         return f"Fechar fila: python {Path(__file__).resolve()} --repo {root} queue done {item.get('id')}"
     return "Revisar status manualmente."
 
@@ -6391,6 +6533,10 @@ def command_telegram_configure(args: argparse.Namespace) -> None:
         tconfig["allow_task_creation"] = True
     if args.block_task_creation:
         tconfig["allow_task_creation"] = False
+    if args.allow_remote_execution:
+        tconfig["allow_remote_execution"] = True
+    if args.block_remote_execution:
+        tconfig["allow_remote_execution"] = False
     if args.download_media:
         tconfig["download_media"] = True
     if args.no_download_media:
@@ -6406,6 +6552,7 @@ def command_telegram_configure(args: argparse.Namespace) -> None:
     print(f"- chats de notificacao: {', '.join(tconfig.get('chat_ids', [])) or 'nenhum'}")
     print(f"- chats autorizados: {', '.join(tconfig.get('allowed_chat_ids', [])) or 'mesmos chats de notificacao'}")
     print(f"- token env: {tconfig.get('token_env')}")
+    print(f"- execucao remota: {str(config_bool(tconfig.get('allow_remote_execution'), False)).lower()}")
     print(f"- midia via OpenAI: {str(config_bool(tconfig.get('openai_media', {}).get('enabled'), False)).lower()}")
 
 
@@ -6438,6 +6585,7 @@ def command_telegram_status(args: argparse.Namespace) -> None:
     print(f"- chats autorizados: {', '.join(str(item) for item in tconfig.get('allowed_chat_ids', [])) or 'mesmos chats de notificacao'}")
     print(f"- eventos: {', '.join(str(item) for item in tconfig.get('notify_events', []))}")
     print(f"- criacao de task: {str(config_bool(tconfig.get('allow_task_creation'), True)).lower()}")
+    print(f"- execucao remota: {str(config_bool(tconfig.get('allow_remote_execution'), False)).lower()}")
     print(f"- download de midia: {str(config_bool(tconfig.get('download_media'), True)).lower()}")
     print(f"- midia via OpenAI: {str(config_bool(tconfig.get('openai_media', {}).get('enabled'), False)).lower()}")
 
@@ -6499,6 +6647,12 @@ def command_telegram_codex(args: argparse.Namespace) -> None:
         raise SystemExit(
             "Token do Telegram nao encontrado. Configure a variavel de ambiente "
             f"{telegram_config(config).get('token_env')}."
+        )
+    if not telegram_remote_execution_allowed(config):
+        raise SystemExit(
+            "Execucao remota via Telegram esta desligada ou sem allowlist.\n"
+            "Configure `telegram.allow_remote_execution=true` e ao menos um `allowed_chat_id` "
+            "antes de usar `telegram codex`."
         )
     codex_executable()
     state_path = telegram_root(root) / "codex-state.json"
@@ -6667,6 +6821,11 @@ def command_telegram_bridge(args: argparse.Namespace) -> None:
             f"{telegram_config(config).get('token_env')}."
         )
     if args.send_mode == "codex-exec":
+        if not telegram_remote_execution_allowed(config):
+            raise SystemExit(
+                "Modo codex-exec bloqueado: configure `telegram.allow_remote_execution=true` "
+                "e ao menos um `allowed_chat_id`."
+            )
         codex_executable()
 
     session_path = Path(args.session_file).expanduser().resolve() if args.session_file else latest_codex_session_file()
@@ -6779,6 +6938,20 @@ def command_telegram_bridge(args: argparse.Namespace) -> None:
 
             force_codex = stripped.lower().startswith("/codex")
             if args.send_mode == "codex-exec" or force_codex:
+                if not telegram_remote_execution_allowed(config):
+                    item["action"] = "bridge_remote_execution_blocked"
+                    item["error"] = "allow_remote_execution disabled or allowlist empty"
+                    write_json(path, item)
+                    if not args.no_reply:
+                        telegram_reply(
+                            config,
+                            chat_id,
+                            "Execucao remota via Telegram esta desligada. Ative allow_remote_execution e allowed_chat_id.",
+                        )
+                    processed += 1
+                    update_offset = max(update_offset or 0, update_id + 1)
+                    write_json(bridge_state_path, {"telegram_offset": update_offset, "event_offset": event_offset, "updated_at": utc_now()})
+                    continue
                 try:
                     if not args.no_reply:
                         telegram_reply(config, chat_id, "Recebido. Vou chamar o Codex em paralelo.")
@@ -6927,6 +7100,7 @@ def command_status(args: argparse.Namespace) -> None:
     print(f"- habilitado: {str(config_bool(tconfig.get('enabled'), False)).lower()}")
     print(f"- chats de notificacao: {', '.join(str(item) for item in tconfig.get('chat_ids', [])) or 'nenhum'}")
     print(f"- criacao de task: {str(config_bool(tconfig.get('allow_task_creation'), True)).lower()}")
+    print(f"- execucao remota: {str(config_bool(tconfig.get('allow_remote_execution'), False)).lower()}")
 
     print("\nOperacao:")
     print(f"- profile ativo: {config.get('active_profile', 'balanced')}")
@@ -7356,6 +7530,7 @@ def build_parser() -> argparse.ArgumentParser:
     plugin_run.add_argument("event")
     plugin_run.add_argument("--task-id")
     plugin_run.add_argument("--dry-run", action="store_true")
+    plugin_run.add_argument("--reviewed", action="store_true", help="Confirma que os comandos dos plugins foram revisados")
     plugin_run.add_argument("--timeout", type=int, default=300)
     plugin_run.set_defaults(func=command_plugin_run)
 
@@ -7371,6 +7546,8 @@ def build_parser() -> argparse.ArgumentParser:
     telegram_configure.add_argument("--event", action="append", help="Evento que deve notificar; repetivel")
     telegram_configure.add_argument("--allow-task-creation", action="store_true", help="Permite /new criar tasks")
     telegram_configure.add_argument("--block-task-creation", action="store_true", help="Bloqueia /new criar tasks")
+    telegram_configure.add_argument("--allow-remote-execution", action="store_true", help="Permite Telegram chamar Codex exec")
+    telegram_configure.add_argument("--block-remote-execution", action="store_true", help="Bloqueia Telegram chamar Codex exec")
     telegram_configure.add_argument("--download-media", action="store_true", help="Baixa imagens/audios recebidos")
     telegram_configure.add_argument("--no-download-media", action="store_true", help="Nao baixa imagens/audios recebidos")
     telegram_configure.add_argument("--openai-media", action="store_true", help="Usa OpenAI opcional para transcrever/descrever midia")
@@ -7457,6 +7634,11 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("Interrupted.", file=sys.stderr)
         return 130
+    except Exception as exc:
+        if os.environ.get("HARNESS_DEBUG"):
+            raise
+        print(f"Erro inesperado: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

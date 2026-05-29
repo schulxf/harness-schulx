@@ -162,6 +162,22 @@ def test_security_scan_detects_real_looking_secret_in_tracked_text_file(tmp_path
     assert finding["line"] == 1
 
 
+def test_security_scan_checks_telegram_inbox_json(tmp_path):
+    repo = init_repo(tmp_path)
+    token = "ghp_" + "fedcba9876543210fedcba9876543210abcd"
+    inbox = repo / ".harness" / "inbox" / "telegram" / "tg-1-1.json"
+    inbox.write_text(json.dumps({"text": f"GITHUB_TOKEN={token}"}), encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc:
+        run(["--repo", str(repo), "security", "scan"])
+
+    assert exc.value.code == 1
+    report = read_json(repo / ".harness" / "security" / "scan-latest.json")
+    assert report["inbox_files_scanned"] == 1
+    finding = next(item for item in report["findings"] if "tg-1-1.json" in item["path"])
+    assert finding["kind"] == "github_token"
+
+
 def test_plugin_registry_add_and_list(tmp_path, capsys):
     repo = init_repo(tmp_path)
 
@@ -187,6 +203,43 @@ def test_plugin_registry_add_and_list(tmp_path, capsys):
     assert registry["plugins"][0]["name"] == "greptile-review"
     assert registry["plugins"][0]["path"] == "skills/greptile-review"
     assert registry["plugins"][0]["description"] == "Review agent"
+
+
+def test_plugin_run_requires_review_and_uses_safe_substitution(tmp_path, capsys):
+    repo = init_repo(tmp_path)
+
+    assert run(
+        [
+            "--repo",
+            str(repo),
+            "plugin",
+            "add",
+            "audit",
+            "--command",
+            "noop {repo} {task_id} {event} {literal}",
+            "--event",
+            "done",
+        ]
+    ) == 0
+
+    with pytest.raises(SystemExit) as exc:
+        run(["--repo", str(repo), "plugin", "run", "done", "--task-id", "TASK-123"])
+    assert "bloqueada" in str(exc.value)
+
+    assert run(
+        [
+            "--repo",
+            str(repo),
+            "plugin",
+            "run",
+            "done",
+            "--task-id",
+            "TASK-123",
+            "--dry-run",
+        ]
+    ) == 0
+    out = capsys.readouterr().out
+    assert f"noop {repo} TASK-123 done {{literal}}" in out
 
 
 def test_memory_remember_and_list(tmp_path, capsys):

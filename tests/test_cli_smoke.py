@@ -494,6 +494,7 @@ def test_telegram_configure_updates_config(tmp_path):
             "123",
             "--allowed-chat-id",
             "123",
+            "--allow-remote-execution",
             "--openai-media",
         ]
     ) == 0
@@ -501,12 +502,14 @@ def test_telegram_configure_updates_config(tmp_path):
     assert config["telegram"]["enabled"] is True
     assert config["telegram"]["chat_ids"] == ["123"]
     assert config["telegram"]["allowed_chat_ids"] == ["123"]
+    assert config["telegram"]["allow_remote_execution"] is True
     assert config["telegram"]["openai_media"]["enabled"] is True
 
 
 def test_telegram_text_update_saves_inbox(tmp_path):
     repo = init_repo(tmp_path)
     config = harness.load_config(repo)
+    config["telegram"]["allowed_chat_ids"] = ["123"]
     path = harness.handle_telegram_update(
         repo,
         config,
@@ -525,11 +528,51 @@ def test_telegram_text_update_saves_inbox(tmp_path):
     item = json.loads(path.read_text(encoding="utf-8"))
     assert item["prompt_text"] == "Criar tela de relatorio simples"
     assert item["action"] == "inbox_saved"
+    assert "raw_update" not in item
+    assert item["raw_update_metadata"]["update_id"] == 10
+
+
+def test_telegram_update_from_unlisted_chat_is_rejected(tmp_path):
+    repo = init_repo(tmp_path)
+    config = harness.load_config(repo)
+    path = harness.handle_telegram_update(
+        repo,
+        config,
+        {
+            "update_id": 12,
+            "message": {
+                "message_id": 22,
+                "chat": {"id": 999},
+                "from": {"id": 999, "first_name": "Stranger"},
+                "text": "Abrir acesso",
+            },
+        },
+        reply=False,
+    )
+    assert path and path.exists()
+    item = json.loads(path.read_text(encoding="utf-8"))
+    assert item["action"] == "rejected_chat"
+    assert "text" not in item
+
+
+def test_telegram_codex_requires_remote_execution_flag(tmp_path, monkeypatch):
+    repo = init_repo(tmp_path)
+    config = harness.load_config(repo)
+    config["telegram"]["chat_ids"] = ["123"]
+    config["telegram"]["allowed_chat_ids"] = ["123"]
+    harness.write_json(repo / ".harness" / "config.json", config)
+    monkeypatch.setenv("HARNESS_TELEGRAM_BOT_TOKEN", "123456789:abcdefghijklmnopqrstuvwxyzABCDE")
+
+    with pytest.raises(SystemExit) as exc:
+        run(["--repo", str(repo), "telegram", "codex", "--once"])
+
+    assert "Execucao remota via Telegram esta desligada" in str(exc.value)
 
 
 def test_telegram_new_command_creates_task_without_reply(tmp_path):
     repo = init_repo(tmp_path)
     config = harness.load_config(repo)
+    config["telegram"]["allowed_chat_ids"] = ["123"]
     path = harness.handle_telegram_update(
         repo,
         config,
