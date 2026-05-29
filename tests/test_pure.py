@@ -182,7 +182,7 @@ def test_telegram_poll_updates_builds_standard_payload(monkeypatch):
         calls.append((token, method, payload, timeout))
         return [{"update_id": 1}]
 
-    monkeypatch.setattr(harness, "telegram_api_call", fake_api_call)
+    monkeypatch.setattr("harness_core.telegram.telegram_api_call", fake_api_call)
 
     assert harness.telegram_poll_updates("tok", timeout=5, limit=2, offset=9) == [{"update_id": 1}]
     assert calls == [
