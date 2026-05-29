@@ -83,6 +83,10 @@ def telegram_send_message(
     return sent
 
 
+def telegram_reply(config: dict[str, Any], chat_id: str, text: str) -> None:
+    telegram_send_message(config, text, [str(chat_id)])
+
+
 def openai_media_config(config: dict[str, Any]) -> dict[str, Any]:
     return telegram_config(config).get("openai_media", {})
 
