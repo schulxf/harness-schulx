@@ -64,6 +64,7 @@ export function sectorForAgent(agent) {
 export function stateForAgent(agent) {
   const raw = String(agent?.state || agent?.status || "").toLowerCase();
   if (raw.includes("offline") || raw.includes("dead")) return "offline";
+  if (raw.includes("done") || raw.includes("complete") || raw.includes("success") || raw.includes("finished")) return "done";
   if (raw.includes("walk") || raw.includes("move")) return "walking";
   if (raw.includes("talk") || raw.includes("message")) return "talking";
   if (raw.includes("work") || raw.includes("run") || raw.includes("active")) return "working";
@@ -75,6 +76,7 @@ export function activityLabel(agent) {
   const state = stateForAgent(agent);
   const sector = sectorForAgent(agent);
   if (state === "offline") return "Offline";
+  if (state === "done") return `Done in ${sector}`;
   if (state === "talking") return "Talking";
   if (state === "walking") return `Walking to ${sector}`;
   if (state === "working") return `Working in ${sector}`;
@@ -87,6 +89,7 @@ export function speechForAgent(agent) {
   if (agent?.task_title) return `On ${agent.task_title}`;
   if (agent?.task_id) return `Working ${agent.task_id}`;
   if (stateForAgent(agent) === "offline") return "Session offline.";
+  if (stateForAgent(agent) === "done") return "Done.";
   return "Waiting for work.";
 }
 

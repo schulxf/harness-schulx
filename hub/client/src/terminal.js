@@ -41,6 +41,13 @@ function quoteTerminalPath(value) {
   return `"${pathText.replace(/(["`$\\])/g, "\\$1")}" `;
 }
 
+function isWorkInput(data) {
+  const value = String(data || "");
+  if (!value || value === "\x03") return false;
+  const withoutAnsi = value.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+  return /[^\s\x00-\x1f\x7f]/.test(withoutAnsi);
+}
+
 export class AgentTerminal {
   constructor(root, handlers = {}) {
     this.root = root;
@@ -263,7 +270,11 @@ export class AgentTerminal {
     let frame;
     try { frame = JSON.parse(data); } catch (_) { this.term.write(String(data)); return; }
     if (frame.type === "output") this.term.write(frame.data || "");
-    else if (frame.type === "exit") this.term.writeln(`\r\n\x1b[90m[process exited${frame.code != null ? `: ${frame.code}` : ""}]\x1b[0m`);
+    else if (frame.type === "exit") {
+      this.term.writeln(`\r\n\x1b[90m[process exited${frame.code != null ? `: ${frame.code}` : ""}]\x1b[0m`);
+      if (this.agent && this.handlers.onComplete) this.handlers.onComplete(this.agent.id, frame);
+      this.renderHeader();
+    }
   }
 
   sendFrame(frame) {
@@ -271,6 +282,9 @@ export class AgentTerminal {
   }
 
   sendInput(data) {
+    if (this.agent && isWorkInput(data) && this.handlers.onInput) {
+      this.handlers.onInput(this.agent.id, data);
+    }
     this.sendFrame({ type: "input", data });
   }
 

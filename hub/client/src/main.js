@@ -16,6 +16,9 @@ let selectedAgentId = "";
 let selectedSector = "";
 let lastTime = performance.now();
 let connection = { state: "connecting", label: "Connecting" };
+const agentVisualOverrides = new Map();
+const WORKING_OVERRIDE_MS = 2 * 60 * 60 * 1000;
+const DONE_OVERRIDE_MS = 20 * 60 * 1000;
 
 const hub = new HubClient({
   onStatus(status) { connection = status; ui.setConnection(status); },
@@ -24,6 +27,8 @@ const hub = new HubClient({
 
 const terminal = new AgentTerminal(document.getElementById("agentModal"), {
   onKill: killAgentById,
+  onInput: markAgentWorkingFromTerminal,
+  onComplete: markAgentCompleted,
   hub,
 });
 const agents = new AgentLayer();
@@ -63,6 +68,80 @@ function selectedAgent() {
   return repo?.agents.find((a) => a.id === selectedAgentId) || null;
 }
 
+function findAgentRecord(agentId) {
+  for (const repo of world.repos || []) {
+    const agent = repo.agents?.find((item) => item.id === agentId);
+    if (agent) return { repo, agent };
+  }
+  return { repo: null, agent: null };
+}
+
+function cleanupAgentVisualOverrides(now = Date.now()) {
+  for (const [agentId, override] of agentVisualOverrides) {
+    if (override.expires_at && override.expires_at < now) agentVisualOverrides.delete(agentId);
+  }
+}
+
+function applyAgentVisualOverrides(targetWorld = world) {
+  cleanupAgentVisualOverrides();
+  for (const repo of targetWorld.repos || []) {
+    for (const agent of repo.agents || []) {
+      const override = agentVisualOverrides.get(agent.id);
+      if (!override) continue;
+      Object.assign(agent, {
+        state: override.state,
+        status: override.status,
+        sector: override.sector || agent.sector,
+        speech: override.speech,
+        visual_status: override.visual_status,
+        visual_updated_at: override.visual_updated_at,
+      });
+    }
+  }
+  return targetWorld;
+}
+
+function markAgentWorkingFromTerminal(agentId) {
+  const now = Date.now();
+  const existing = agentVisualOverrides.get(agentId);
+  if (existing?.visual_status === "working" && now - (existing.last_input_at || 0) < 750) {
+    existing.last_input_at = now;
+    existing.expires_at = now + WORKING_OVERRIDE_MS;
+    return;
+  }
+  const { agent } = findAgentRecord(agentId);
+  if (!agent) return;
+  agentVisualOverrides.set(agentId, {
+    state: "working",
+    status: "working",
+    sector: agent.sector || "implement",
+    speech: "working...",
+    visual_status: "working",
+    visual_updated_at: new Date(now).toISOString(),
+    last_input_at: now,
+    expires_at: now + WORKING_OVERRIDE_MS,
+  });
+  applyAgentVisualOverrides();
+  renderUi();
+}
+
+function markAgentCompleted(agentId) {
+  const now = Date.now();
+  const { agent } = findAgentRecord(agentId);
+  if (!agent) return;
+  agentVisualOverrides.set(agentId, {
+    state: "done",
+    status: "done",
+    sector: agent.sector || "report",
+    speech: "Done.",
+    visual_status: "done",
+    visual_updated_at: new Date(now).toISOString(),
+    expires_at: now + DONE_OVERRIDE_MS,
+  });
+  applyAgentVisualOverrides();
+  renderUi();
+}
+
 function canvasPoint(event) {
   const rect = canvas.getBoundingClientRect();
   return {
@@ -93,12 +172,14 @@ function renderFrame(now) {
 function handleHubEvent(event) {
   const snapshot = event?.world || (Array.isArray(event?.repos) ? event : null);
   world = snapshot ? buildWorldState(snapshot) : applyWorldEvent(world, event);
+  applyAgentVisualOverrides();
   if (!findRepo(world, selectedRepoId)) selectedRepoId = world.repos[0]?.id || "";
   renderUi();
 }
 
 async function refreshWorld() {
   world = buildWorldState(await hub.loadWorld());
+  applyAgentVisualOverrides();
   const selectedStillExists = world.repos.some((repo) => repo.id === selectedRepoId || repo.root === selectedRepoId);
   if (!selectedStillExists) {
     selectedRepoId = world.repos.find((repo) => repo.agents?.length)?.id || world.repos[0]?.id || "";

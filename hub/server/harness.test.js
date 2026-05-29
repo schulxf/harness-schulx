@@ -41,12 +41,23 @@ test("collectWorld reads .harness state and marks dead PTY agents offline", () =
     state: "done",
     status: "done",
   });
+  harness.augmentAgent(repo, "stale-done-1", {
+    name: "Stale Done",
+    role: "reviewer",
+    state: "done",
+    status: "done",
+  });
+  const registryPath = path.join(repo, ".harness", "agents", "registry.json");
+  const registry = JSON.parse(fs.readFileSync(registryPath, "utf8"));
+  registry.agents.find((agent) => agent.id === "stale-done-1").updated_at = "2000-01-01T00:00:00Z";
+  fs.writeFileSync(registryPath, JSON.stringify(registry), "utf8");
   const world = harness.collectWorld({ controlRoot: repo, watchRepos: [], ptyManager: { available: false, hasAgent: () => false } });
   assert.equal(world.repo_count, 1);
   assert.equal(world.repos[0].project, "Demo Repo");
-  assert.equal(world.repos[0].agents.length, 1);
+  assert.equal(world.repos[0].agents.length, 2);
   assert.equal(world.repos[0].agents[0].state, "offline");
   assert.equal(world.repos[0].agents[0].sector, "implement");
+  assert.equal(world.repos[0].agents[1].state, "done");
 });
 
 test("readNewEventsForRepos tails events.jsonl by offset", () => {

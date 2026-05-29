@@ -44,6 +44,7 @@ const DEFAULT_HUB_CONFIG = {
     scrollback_bytes: 262144,
   },
 };
+const DONE_AGENT_VISIBLE_MS = 30 * 60 * 1000;
 
 class HttpError extends Error {
   constructor(status, message, details) {
@@ -365,7 +366,14 @@ function repoPhase(tasks, queue, agents) {
 function decorateAgents(repoRoot, agents, ptyManager) {
   return agents.filter((agent) => {
     const state = String(agent.state || agent.status || "").toLowerCase();
-    return !["done", "killed"].includes(state);
+    if (state === "killed") {
+      return false;
+    }
+    if (state === "done") {
+      const updatedAt = Date.parse(String(agent.updated_at || agent.heartbeat_at || ""));
+      return Number.isFinite(updatedAt) && Date.now() - updatedAt < DONE_AGENT_VISIBLE_MS;
+    }
+    return true;
   }).map((agent) => {
     const ptyId = String(agent.pty_id || agent.surface_id || "");
     const hasLivePty =

@@ -327,6 +327,13 @@ export function applyWorldEvent(world, event) {
     if (to) upsertAgent(repo, { id: to, state: "talking", speech: payload.text || payload.message || "Message received." });
   } else if (event.type === "agent_terminal_attached") {
     upsertAgent(repo, { id: payload.agent_id || payload.id, pty_id: payload.pty_id, speech: "Terminal attached." });
+  } else if (event.type === "agent_done") {
+    upsertAgent(repo, {
+      id: payload.agent_id || payload.id,
+      state: payload.state || "done",
+      status: payload.state || "done",
+      speech: payload.summary || payload.speech || "Done.",
+    });
   } else {
     const sector = sectorForEvent(event.type);
     const id = payload.agent_id || payload.id;

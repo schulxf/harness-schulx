@@ -11,6 +11,32 @@ function dist(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
+function hashString(value) {
+  let hash = 0;
+  for (const char of String(value || "")) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return hash;
+}
+
+function workSpot(station, agentId, index) {
+  const slot = (hashString(agentId) + index) % 5;
+  return {
+    x: station.x + (slot - 2) * 10,
+    y: station.y + (slot % 2 === 0 ? 0 : 6),
+  };
+}
+
+function pathKey(sector, target) {
+  return `${sector}:${Math.round(target.x)}:${Math.round(target.y)}`;
+}
+
+function isDoorState(state) {
+  return state === "working" || state === "talking" || state === "done";
+}
+
+function isWorkState(state) {
+  return state === "working" || state === "talking";
+}
+
 function plazaRect(town) {
   const p = town.plaza;
   return { x: p.col * TILE + 6, y: p.row * TILE + 6, w: p.w * TILE - 12, h: p.h * TILE - 12 };
@@ -51,13 +77,20 @@ export class AgentLayer {
       e.agent = agent;
       const state = stateForAgent(agent);
       // Only (re)path when the target sector changes — not every frame.
-      if (state !== "idle" && e.pathTargetSector !== sector) {
-        e.target = { ...station };
+      const stationTarget = isDoorState(state) ? workSpot(station, agent.id, index) : station;
+      const nextPathKey = pathKey(sector, stationTarget);
+      if (state !== "idle" && state !== "offline" && e.pathTargetSector !== nextPathKey) {
+        e.target = { ...stationTarget };
+        e.workBase = { ...stationTarget };
         e.path = findPath({ x: e.x, y: e.y }, e.target, { width: MAP_W, height: MAP_H, blockedRects: town.blockedRects });
         e.pathIndex = 1;
-        e.pathTargetSector = sector;
+        e.pathTargetSector = nextPathKey;
+        e.nextWorkNudgeAt = this.now + 5 + (hashString(agent.id) % 120) / 100;
       }
-      if (state === "idle") e.pathTargetSector = null; // allow re-path when work resumes
+      if (state === "idle") {
+        e.pathTargetSector = null; // allow re-path when work resumes
+        e.workBase = null;
+      }
       e.sector = sector;
     });
     for (const [id, e] of this.entities) {
@@ -82,6 +115,16 @@ export class AgentLayer {
           e.y += ((next.y - e.y) / remaining) * step;
         }
         e.bobPhase += dt * 10;
+      } else if (isWorkState(state) && this.now > (e.nextWorkNudgeAt || 0)) {
+        const base = e.workBase || e.target || town.stations[e.sector] || town.plaza.center;
+        e.nudgeSide = e.nudgeSide === 1 ? -1 : 1;
+        const target = {
+          x: base.x + e.nudgeSide * (8 + Math.abs(Math.sin(e.bobPhase)) * 5),
+          y: base.y + Math.sin(this.now + e.bobPhase) * 3,
+        };
+        e.path = findPath({ x: e.x, y: e.y }, target, { width: MAP_W, height: MAP_H, blockedRects: town.blockedRects });
+        e.pathIndex = 1;
+        e.nextWorkNudgeAt = this.now + 5 + Math.abs(Math.sin(e.bobPhase)) * 1.2;
       } else if (state === "idle" && this.now > e.idleUntil) {
         const target = pointInRect(plaza, this.now + e.bobPhase);
         e.target = target;
@@ -108,6 +151,7 @@ export class AgentLayer {
       const meta = roleMeta(e.agent.role);
       const moving = e.path.length > e.pathIndex;
       const bob = moving ? Math.sin(e.bobPhase) * 2.5 : Math.sin(this.now * 2 + e.bobPhase) * 1.2;
+      const completed = state === "done";
 
       // shadow
       ctx.fillStyle = "rgba(0,0,0,.25)";
@@ -124,6 +168,8 @@ export class AgentLayer {
         ctx.stroke();
       }
 
+      if (completed) drawCompletionGlow(ctx, e.x, e.y, SPRITE, bob, this.now);
+
       ctx.globalAlpha = state === "offline" ? 0.45 : 1;
       drawAgentSprite(ctx, e.agent.role, e.x, e.y, SPRITE, { bob, color: meta.color });
       ctx.globalAlpha = 1;
@@ -132,7 +178,7 @@ export class AgentLayer {
       drawNameTag(ctx, e.agent.name || e.agent.id, meta.color, e.x, e.y + 4);
 
       // speech bubble
-      const speech = speechForAgent(e.agent);
+      const speech = displaySpeech(e.agent, state);
       if (speech && (e.id === selectedId || state === "working" || state === "talking")) {
         drawSpeech(ctx, speech, e.x, e.y - SPRITE - 6 + bob);
       }
@@ -141,6 +187,34 @@ export class AgentLayer {
       drawStateDot(ctx, state, e.x + SPRITE * 0.28, e.y - SPRITE + 4);
     }
   }
+}
+
+function displaySpeech(agent, state) {
+  const speech = speechForAgent(agent);
+  if (state === "working" && (!speech || /^working\.{0,3}$/i.test(speech))) {
+    return "working...";
+  }
+  if (state === "done" && (!speech || /^working/i.test(speech))) return "Done.";
+  return speech;
+}
+
+function drawCompletionGlow(ctx, cx, feetY, size, bob, now) {
+  const pulse = 0.5 + Math.sin(now * 5) * 0.5;
+  const left = cx - size * 0.52;
+  const top = feetY - size - 4 + bob;
+  ctx.save();
+  ctx.shadowColor = "#67ffd8";
+  ctx.shadowBlur = 16 + pulse * 14;
+  ctx.strokeStyle = `rgba(103,255,216,${0.72 + pulse * 0.22})`;
+  ctx.lineWidth = 3;
+  roundRect(ctx, left, top, size * 1.04, size + 10, 8);
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = "rgba(255,255,255,.78)";
+  ctx.lineWidth = 1;
+  roundRect(ctx, left + 3, top + 3, size * 1.04 - 6, size + 4, 6);
+  ctx.stroke();
+  ctx.restore();
 }
 
 function drawNameTag(ctx, text, color, cx, topY) {
@@ -187,7 +261,7 @@ function drawSpeech(ctx, text, cx, bottomY) {
   ctx.restore();
 }
 
-const STATE_COLOR = { working: "#5cd06a", walking: "#54a7c7", talking: "#d9a441", idle: "#9aa08c", offline: "#6b6b6b" };
+const STATE_COLOR = { working: "#5cd06a", walking: "#54a7c7", talking: "#d9a441", done: "#67ffd8", idle: "#9aa08c", offline: "#6b6b6b" };
 function drawStateDot(ctx, state, x, y) {
   ctx.save();
   ctx.fillStyle = STATE_COLOR[state] || "#9aa08c";
