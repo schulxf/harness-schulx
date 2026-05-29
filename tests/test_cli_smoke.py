@@ -569,6 +569,20 @@ def test_telegram_codex_requires_remote_execution_flag(tmp_path, monkeypatch):
     assert "Execucao remota via Telegram esta desligada" in str(exc.value)
 
 
+def test_telegram_bridge_codex_exec_requires_remote_execution_flag(tmp_path, monkeypatch):
+    repo = init_repo(tmp_path)
+    config = harness.load_config(repo)
+    config["telegram"]["chat_ids"] = ["123"]
+    config["telegram"]["allowed_chat_ids"] = ["123"]
+    harness.write_json(repo / ".harness" / "config.json", config)
+    monkeypatch.setenv("HARNESS_TELEGRAM_BOT_TOKEN", "123456789:abcdefghijklmnopqrstuvwxyzABCDE")
+
+    with pytest.raises(SystemExit) as exc:
+        run(["--repo", str(repo), "telegram", "bridge", "--send-mode", "codex-exec", "--once"])
+
+    assert "Modo codex-exec bloqueado" in str(exc.value)
+
+
 def test_telegram_new_command_creates_task_without_reply(tmp_path):
     repo = init_repo(tmp_path)
     config = harness.load_config(repo)

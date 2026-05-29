@@ -216,7 +216,7 @@ def test_plugin_run_requires_review_and_uses_safe_substitution(tmp_path, capsys)
             "add",
             "audit",
             "--command",
-            "noop {repo} {task_id} {event} {literal}",
+            "noop {repo} {task_id} {event}",
             "--event",
             "done",
         ]
@@ -239,7 +239,27 @@ def test_plugin_run_requires_review_and_uses_safe_substitution(tmp_path, capsys)
         ]
     ) == 0
     out = capsys.readouterr().out
-    assert f"noop {repo} TASK-123 done {{literal}}" in out
+    assert f"noop {repo} TASK-123 done" in out
+
+
+def test_plugin_run_rejects_unknown_placeholder(tmp_path):
+    repo = init_repo(tmp_path)
+
+    assert run(
+        [
+            "--repo",
+            str(repo),
+            "plugin",
+            "add",
+            "audit",
+            "--command",
+            "noop {repo} {branch}",
+        ]
+    ) == 0
+
+    with pytest.raises(SystemExit) as exc:
+        run(["--repo", str(repo), "plugin", "run", "done", "--dry-run"])
+    assert "Placeholder de plugin desconhecido: {branch}" in str(exc.value)
 
 
 def test_memory_remember_and_list(tmp_path, capsys):

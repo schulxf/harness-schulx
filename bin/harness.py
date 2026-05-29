@@ -68,7 +68,6 @@ from harness_core.defaults import (  # noqa: E402
     DEFAULT_PROTECTED_BRANCHES,
     DEFAULT_REVIEW_POLICY,
     DEFAULT_TELEGRAM_CONFIG,
-    SECRET_PATTERNS,
     SECURITY_EXCLUDED_DIRS,
 )
 from harness_core.paths import (  # noqa: E402
@@ -105,7 +104,19 @@ from harness_core.paths import (  # noqa: E402
     to_posix,
 )
 from harness_core.paths import is_inside_root as is_inside_root  # noqa: E402
+from harness_core.plugin_policy import (  # noqa: E402
+    PluginPolicyError,
+    render_plugin_command,
+    require_plugin_run_allowed,
+    runnable_plugins,
+)
 from harness_core.records import QueueRecord, TaskRecord  # noqa: E402
+from harness_core.security_scan import (  # noqa: E402
+    is_probably_text as is_probably_text,
+)
+from harness_core.security_scan import (  # noqa: E402
+    scan_file_for_secrets as scan_file_for_secrets,
+)
 from harness_core.status import (  # noqa: E402
     QUEUE_STATUS_ACTIVE,
     QUEUE_STATUS_DONE,
@@ -885,6 +896,16 @@ def telegram_token(config: dict[str, Any]) -> str:
     return os.environ.get(str(tconfig.get("token_env") or "HARNESS_TELEGRAM_BOT_TOKEN"), "")
 
 
+def require_telegram_bot_token(config: dict[str, Any]) -> str:
+    token = telegram_token(config)
+    if token:
+        return token
+    raise SystemExit(
+        "Token do Telegram nao encontrado. Configure a variavel de ambiente "
+        f"{telegram_config(config).get('token_env')}."
+    )
+
+
 def telegram_api_call(
     token: str,
     method: str,
@@ -1176,6 +1197,15 @@ def require_safe_branch(root: Path, args: argparse.Namespace, operation: str) ->
             "`git switch -c harness/TASK-001`, ou rode com `--allow-main` antes do comando "
             "se voce realmente quiser operar nessa branch."
         )
+
+
+def prepared_repo(args: argparse.Namespace, *, safe_operation: str | None = None) -> Path:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    if safe_operation:
+        require_safe_branch(root, args, safe_operation)
+    return root
 
 
 def split_sensor_command(command: str) -> list[str]:
@@ -2071,6 +2101,86 @@ def run_codex_for_telegram(
     }
     write_json(run_dir / "codex-run.json", payload)
     return payload
+
+
+def execute_telegram_codex_item(
+    root: Path,
+    config: dict[str, Any],
+    item_path: Path,
+    item: dict[str, Any],
+    chat_id: str,
+    prompt_text: str,
+    *,
+    resume_last: bool,
+    session_id: str | None,
+    model: str | None,
+    sandbox: str | None,
+    approval: str | None,
+    bypass: bool,
+    timeout: int,
+    reply: bool,
+    start_message: str,
+    completed_action: str,
+    failed_action: str,
+    timeout_action: str | None = None,
+    include_stderr_path_on_error: bool = False,
+) -> dict[str, Any] | None:
+    if reply:
+        telegram_reply(config, chat_id, start_message)
+    try:
+        result = run_codex_for_telegram(
+            root,
+            item,
+            prompt_text=prompt_text,
+            resume_last=resume_last,
+            session_id=session_id,
+            model=model,
+            sandbox=sandbox,
+            approval=approval,
+            bypass=bypass,
+            timeout=timeout,
+        )
+        item["action"] = completed_action
+        item["codex"] = {
+            "run_id": result["run_id"],
+            "exit_code": result["exit_code"],
+            "duration_ms": result["duration_ms"],
+            "output_path": result["output_path"],
+        }
+        write_json(item_path, item)
+        response = result.get("response") or "Codex terminou sem mensagem final."
+        if result.get("exit_code") != 0:
+            if include_stderr_path_on_error:
+                response = (
+                    f"Codex terminou com erro {result.get('exit_code')}.\n"
+                    f"Veja: {result.get('stderr_path')}\n\n"
+                    f"{response}"
+                )
+            else:
+                response = f"Codex terminou com erro {result.get('exit_code')}.\n\n{response}"
+        if reply:
+            telegram_reply(config, chat_id, response)
+        return result
+    except subprocess.TimeoutExpired as exc:
+        if timeout_action:
+            item["action"] = timeout_action
+            write_json(item_path, item)
+            if reply:
+                telegram_reply(config, chat_id, "Codex demorou demais e foi interrompido por timeout.")
+            return None
+        item["action"] = failed_action
+        item["error"] = str(exc)
+        write_json(item_path, item)
+        if reply:
+            telegram_reply(config, chat_id, f"Falha ao chamar Codex: {exc}")
+        return None
+    except Exception as exc:
+        item["action"] = failed_action
+        item["error"] = str(exc)
+        write_json(item_path, item)
+        if reply:
+            telegram_reply(config, chat_id, f"Falha ao chamar Codex: {exc}")
+        return None
 
 
 def codex_sessions_root() -> Path:
@@ -3630,10 +3740,7 @@ def command_artifacts_list(args: argparse.Namespace) -> None:
 
 
 def command_plugin_add(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    require_safe_branch(root, args, "plugin add")
+    root = prepared_repo(args, safe_operation="plugin add")
     plugins = [plugin for plugin in load_plugins(root) if plugin.get("name") != args.name]
     plugins.append(
         {
@@ -3652,9 +3759,7 @@ def command_plugin_add(args: argparse.Namespace) -> None:
 
 
 def command_plugin_list(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     plugins = load_plugins(root)
     if not plugins:
         print("Nenhum plugin registrado.")
@@ -3666,10 +3771,7 @@ def command_plugin_list(args: argparse.Namespace) -> None:
 
 
 def command_plugin_set_enabled(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    require_safe_branch(root, args, f"plugin {args.plugin_command}")
+    root = prepared_repo(args, safe_operation=f"plugin {args.plugin_command}")
     plugins = load_plugins(root)
     for plugin in plugins:
         if plugin.get("name") == args.name:
@@ -3681,40 +3783,22 @@ def command_plugin_set_enabled(args: argparse.Namespace) -> None:
     raise SystemExit(f"Plugin nao encontrado: {args.name}")
 
 
-def render_plugin_command(template: str, root: Path, task_id: str, event: str) -> str:
-    values = {
-        "{repo}": str(root),
-        "{task_id}": task_id,
-        "{event}": event,
-    }
-    command = template
-    for marker, value in values.items():
-        command = command.replace(marker, value)
-    return command
-
-
 def command_plugin_run(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    require_safe_branch(root, args, "plugin run")
-    plugins = [
-        plugin
-        for plugin in load_plugins(root)
-        if config_bool(plugin.get("enabled"), True)
-        and plugin.get("command")
-        and (not plugin.get("events") or args.event in plugin.get("events", []))
-    ]
+    root = prepared_repo(args, safe_operation="plugin run")
+    plugins = runnable_plugins(load_plugins(root), args.event)
     if not plugins:
         print("Nenhum plugin habilitado para este evento.")
         return
-    if not args.dry_run and not args.reviewed:
-        raise SystemExit(
-            "Execucao de plugin bloqueada: revise os comandos registrados e rode novamente com `plugin run --reviewed`."
-        )
+    try:
+        require_plugin_run_allowed(dry_run=args.dry_run, reviewed=args.reviewed)
+    except PluginPolicyError as exc:
+        raise SystemExit(str(exc)) from exc
     results = []
     for plugin in plugins:
-        command = render_plugin_command(str(plugin["command"]), root, args.task_id or "", args.event)
+        try:
+            command = render_plugin_command(str(plugin["command"]), root, args.task_id or "", args.event)
+        except PluginPolicyError as exc:
+            raise SystemExit(str(exc)) from exc
         argv = split_sensor_command(command)
         print(f"Plugin {plugin.get('name')}: {command}")
         if args.dry_run:
@@ -3762,46 +3846,8 @@ def iter_security_inbox_files(root: Path) -> list[Path]:
     return sorted(path for path in inbox.glob("*.json") if path.is_file())
 
 
-def is_probably_text(path: Path) -> bool:
-    try:
-        sample = path.read_bytes()[:4096]
-    except OSError:
-        return False
-    return b"\0" not in sample
-
-
-def scan_file_for_secrets(root: Path, path: Path, *, allow_harness: bool = False) -> list[dict[str, Any]]:
-    if not allow_harness and any(part in SECURITY_EXCLUDED_DIRS for part in path.relative_to(root).parts):
-        return []
-    if not is_probably_text(path):
-        return []
-    findings = []
-    try:
-        lines = read_text(path).splitlines()
-    except UnicodeDecodeError:
-        return []
-    for line_number, line in enumerate(lines, start=1):
-        for kind, pattern in SECRET_PATTERNS:
-            match = pattern.search(line)
-            if not match:
-                continue
-            value = match.group(0)
-            redacted = value[:8] + "..." + value[-4:] if len(value) > 16 else "[redacted]"
-            findings.append(
-                {
-                    "kind": kind,
-                    "path": relative_to_root(root, path),
-                    "line": line_number,
-                    "match": redacted,
-                }
-            )
-    return findings
-
-
 def command_security_scan(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     files = iter_security_scan_files(root, tracked_only=not args.include_untracked)
     inbox_files = iter_security_inbox_files(root)
     findings: list[dict[str, Any]] = []
@@ -3835,9 +3881,7 @@ def command_security_scan(args: argparse.Namespace) -> None:
 
 
 def command_security_status(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     path = security_root(root) / "scan-latest.json"
     if not path.exists():
         print("Nenhum security scan registrado.")
@@ -5296,12 +5340,7 @@ def command_telegram_listen(args: argparse.Namespace) -> None:
     require_init(root)
     require_safe_branch(root, args, "telegram listen")
     config = load_config(root)
-    token = telegram_token(config)
-    if not token:
-        raise SystemExit(
-            "Token do Telegram nao encontrado. Configure a variavel de ambiente "
-            f"{telegram_config(config).get('token_env')}."
-        )
+    token = require_telegram_bot_token(config)
     state = read_json(telegram_state_path(root), {})
     offset = state.get("offset")
     print("Ouvindo Telegram. Ctrl+C para parar.")
@@ -5381,18 +5420,80 @@ def write_telegram_bridge_state(
     )
 
 
+def prepare_telegram_exec_update(
+    root: Path,
+    config: dict[str, Any],
+    update: dict[str, Any],
+    *,
+    command_prefixes: tuple[str, ...],
+    download_media: bool,
+    reply_to_harness_commands: bool,
+) -> dict[str, Any]:
+    context = telegram_update_context(update)
+    stripped = context["stripped"]
+    result: dict[str, Any] = {
+        "update_id": context["update_id"],
+        "chat_id": context["chat_id"],
+        "stripped": stripped,
+        "path": None,
+        "item": None,
+        "prompt_text": "",
+        "ready": False,
+        "processed": False,
+        "harness_command": False,
+    }
+
+    if not telegram_chat_allowed(config, context["chat_id"]):
+        result["path"] = handle_telegram_update(root, config, update, reply=False)
+        return result
+
+    if stripped.startswith("/") and not stripped.lower().startswith(command_prefixes):
+        path = handle_telegram_update(
+            root,
+            config,
+            update,
+            create_tasks=False,
+            download_media=download_media,
+            reply=reply_to_harness_commands,
+        )
+        result["path"] = path
+        result["processed"] = bool(path)
+        result["harness_command"] = bool(path)
+        return result
+
+    path = handle_telegram_update(
+        root,
+        config,
+        update,
+        create_tasks=False,
+        download_media=download_media,
+        reply=False,
+    )
+    result["path"] = path
+    if not path:
+        return result
+
+    item = read_json(path, {})
+    if item.get("action") == "rejected_chat":
+        return result
+
+    prompt_text = item.get("prompt_text") or ""
+    if stripped.lower().startswith(command_prefixes):
+        prompt_text = stripped.partition(" ")[2].strip() or prompt_text
+
+    result["item"] = item
+    result["prompt_text"] = prompt_text
+    result["ready"] = True
+    return result
+
+
 def command_telegram_codex(args: argparse.Namespace) -> None:
     root = root_from_args(args)
     require_existing_root(root)
     require_init(root)
     require_safe_branch(root, args, "telegram codex")
     config = load_config(root)
-    token = telegram_token(config)
-    if not token:
-        raise SystemExit(
-            "Token do Telegram nao encontrado. Configure a variavel de ambiente "
-            f"{telegram_config(config).get('token_env')}."
-        )
+    token = require_telegram_bot_token(config)
     if not telegram_remote_execution_allowed(config):
         raise SystemExit(
             "Execucao remota via Telegram esta desligada ou sem allowlist.\n"
@@ -5413,97 +5514,47 @@ def command_telegram_codex(args: argparse.Namespace) -> None:
         )
         processed = 0
         for update in updates:
-            context = telegram_update_context(update)
-            update_id = context["update_id"]
-            chat_id = context["chat_id"]
-            stripped = context["stripped"]
-            if not telegram_chat_allowed(config, chat_id):
-                handle_telegram_update(root, config, update, reply=False)
-                offset = advance_telegram_offset(offset, update_id)
-                write_telegram_offset_state(state_path, offset)
-                continue
-
-            if stripped.startswith("/") and not stripped.lower().startswith("/codex"):
-                path = handle_telegram_update(
-                    root,
-                    config,
-                    update,
-                    create_tasks=False,
-                    download_media=not args.no_download_media,
-                    reply=not args.no_reply,
-                )
-                if path:
-                    processed += 1
-                    print(f"Comando Harness via Telegram: {path}")
-                offset = advance_telegram_offset(offset, update_id)
-                write_telegram_offset_state(state_path, offset)
-                continue
-
-            path = handle_telegram_update(
+            prepared = prepare_telegram_exec_update(
                 root,
                 config,
                 update,
-                create_tasks=False,
                 download_media=not args.no_download_media,
-                reply=False,
+                reply_to_harness_commands=not args.no_reply,
+                command_prefixes=("/codex",),
             )
-            if not path:
+            update_id = prepared["update_id"]
+            if prepared["harness_command"]:
+                processed += 1
+                print(f"Comando Harness via Telegram: {prepared['path']}")
+            if not prepared["ready"]:
                 offset = advance_telegram_offset(offset, update_id)
                 write_telegram_offset_state(state_path, offset)
                 continue
-            item = read_json(path, {})
-            if item.get("action") == "rejected_chat":
-                offset = advance_telegram_offset(offset, update_id)
-                write_telegram_offset_state(state_path, offset)
-                continue
-
-            prompt_text = item.get("prompt_text") or ""
-            if stripped.lower().startswith("/codex"):
-                prompt_text = stripped.partition(" ")[2].strip() or prompt_text
-            if not args.no_reply:
-                telegram_reply(config, chat_id, "Recebido. Vou mandar isso para o Codex agora.")
-            try:
-                result = run_codex_for_telegram(
-                    root,
-                    item,
-                    prompt_text=prompt_text,
-                    resume_last=bool(args.resume_last),
-                    session_id=args.session_id,
-                    model=args.model,
-                    sandbox=args.sandbox,
-                    approval=args.approval,
-                    bypass=bool(args.bypass),
-                    timeout=args.codex_timeout,
-                )
-                item["action"] = "codex_completed"
-                item["codex"] = {
-                    "run_id": result["run_id"],
-                    "exit_code": result["exit_code"],
-                    "duration_ms": result["duration_ms"],
-                    "output_path": result["output_path"],
-                }
-                write_json(path, item)
-                response = result.get("response") or "Codex terminou sem mensagem final."
-                if result.get("exit_code") != 0:
-                    response = (
-                        f"Codex terminou com erro {result.get('exit_code')}.\n"
-                        f"Veja: {result.get('stderr_path')}\n\n"
-                        f"{response}"
-                    )
-                if not args.no_reply:
-                    telegram_reply(config, chat_id, response)
+            path = prepared["path"]
+            item = prepared["item"]
+            result = execute_telegram_codex_item(
+                root,
+                config,
+                path,
+                item,
+                prepared["chat_id"],
+                prepared["prompt_text"],
+                resume_last=bool(args.resume_last),
+                session_id=args.session_id,
+                model=args.model,
+                sandbox=args.sandbox,
+                approval=args.approval,
+                bypass=bool(args.bypass),
+                timeout=args.codex_timeout,
+                reply=not args.no_reply,
+                start_message="Recebido. Vou mandar isso para o Codex agora.",
+                completed_action="codex_completed",
+                failed_action="codex_failed",
+                timeout_action="codex_timeout",
+                include_stderr_path_on_error=True,
+            )
+            if result:
                 print(f"Codex respondeu para {path}: {result['run_id']}")
-            except subprocess.TimeoutExpired:
-                item["action"] = "codex_timeout"
-                write_json(path, item)
-                if not args.no_reply:
-                    telegram_reply(config, chat_id, "Codex demorou demais e foi interrompido por timeout.")
-            except Exception as exc:
-                item["action"] = "codex_failed"
-                item["error"] = str(exc)
-                write_json(path, item)
-                if not args.no_reply:
-                    telegram_reply(config, chat_id, f"Falha ao chamar Codex: {exc}")
             processed += 1
             offset = advance_telegram_offset(offset, update_id)
             write_telegram_offset_state(state_path, offset)
@@ -5518,11 +5569,7 @@ def command_telegram_mirror(args: argparse.Namespace) -> None:
     require_existing_root(root)
     require_init(root)
     config = load_config(root)
-    if not telegram_token(config):
-        raise SystemExit(
-            "Token do Telegram nao encontrado. Configure a variavel de ambiente "
-            f"{telegram_config(config).get('token_env')}."
-        )
+    require_telegram_bot_token(config)
     session_path = Path(args.session_file).expanduser().resolve() if args.session_file else latest_codex_session_file()
     if args.chat_id:
         targets = [str(item) for item in args.chat_id]
@@ -5559,12 +5606,7 @@ def command_telegram_bridge(args: argparse.Namespace) -> None:
     require_init(root)
     require_safe_branch(root, args, "telegram bridge")
     config = load_config(root)
-    token = telegram_token(config)
-    if not token:
-        raise SystemExit(
-            "Token do Telegram nao encontrado. Configure a variavel de ambiente "
-            f"{telegram_config(config).get('token_env')}."
-        )
+    token = require_telegram_bot_token(config)
     if args.send_mode == "codex-exec":
         if not telegram_remote_execution_allowed(config):
             raise SystemExit(
@@ -5629,50 +5671,28 @@ def command_telegram_bridge(args: argparse.Namespace) -> None:
         )
         processed = 0
         for update in updates:
-            context = telegram_update_context(update)
-            update_id = context["update_id"]
-            chat_id = context["chat_id"]
-            stripped = context["stripped"]
-
-            if not telegram_chat_allowed(config, chat_id):
-                handle_telegram_update(root, config, update, reply=False)
-                update_offset = advance_telegram_offset(update_offset, update_id)
-                write_telegram_bridge_state(bridge_state_path, update_offset, event_offset)
-                continue
-
-            if stripped.startswith("/") and not stripped.lower().startswith(("/codex", "/queue", "/note", "/msg")):
-                path = handle_telegram_update(
-                    root,
-                    config,
-                    update,
-                    create_tasks=False,
-                    download_media=not args.no_download_media,
-                    reply=not args.no_reply,
-                )
-                if path:
-                    print(f"Comando Harness via Telegram: {path}")
-                    processed += 1
-                update_offset = advance_telegram_offset(update_offset, update_id)
-                write_telegram_bridge_state(bridge_state_path, update_offset, event_offset)
-                continue
-
-            path = handle_telegram_update(
+            prepared = prepare_telegram_exec_update(
                 root,
                 config,
                 update,
-                create_tasks=False,
                 download_media=not args.no_download_media,
-                reply=False,
+                reply_to_harness_commands=not args.no_reply,
+                command_prefixes=("/codex", "/queue", "/note", "/msg"),
             )
-            if not path:
+            update_id = prepared["update_id"]
+            if prepared["harness_command"]:
+                print(f"Comando Harness via Telegram: {prepared['path']}")
+                processed += 1
+            if not prepared["ready"]:
                 update_offset = advance_telegram_offset(update_offset, update_id)
                 write_telegram_bridge_state(bridge_state_path, update_offset, event_offset)
                 continue
-            item = read_json(path, {})
-            prompt_text = item.get("prompt_text") or ""
-            if stripped.lower().startswith(("/codex", "/queue", "/note", "/msg")):
-                prompt_text = stripped.partition(" ")[2].strip() or prompt_text
 
+            path = prepared["path"]
+            item = prepared["item"]
+            prompt_text = prepared["prompt_text"]
+            chat_id = prepared["chat_id"]
+            stripped = prepared["stripped"]
             force_codex = stripped.lower().startswith("/codex")
             if args.send_mode == "codex-exec" or force_codex:
                 if not telegram_remote_execution_allowed(config):
@@ -5689,40 +5709,25 @@ def command_telegram_bridge(args: argparse.Namespace) -> None:
                     update_offset = advance_telegram_offset(update_offset, update_id)
                     write_telegram_bridge_state(bridge_state_path, update_offset, event_offset)
                     continue
-                try:
-                    if not args.no_reply:
-                        telegram_reply(config, chat_id, "Recebido. Vou chamar o Codex em paralelo.")
-                    result = run_codex_for_telegram(
-                        root,
-                        item,
-                        prompt_text=prompt_text,
-                        resume_last=bool(args.resume_last or not args.session_id),
-                        session_id=args.session_id,
-                        model=args.model,
-                        sandbox=args.sandbox,
-                        approval=args.approval,
-                        bypass=bool(args.bypass),
-                        timeout=args.codex_timeout,
-                    )
-                    item["action"] = "bridge_codex_completed"
-                    item["codex"] = {
-                        "run_id": result["run_id"],
-                        "exit_code": result["exit_code"],
-                        "duration_ms": result["duration_ms"],
-                        "output_path": result["output_path"],
-                    }
-                    write_json(path, item)
-                    response = result.get("response") or "Codex terminou sem mensagem final."
-                    if result.get("exit_code") != 0:
-                        response = f"Codex terminou com erro {result.get('exit_code')}.\n\n{response}"
-                    if not args.no_reply:
-                        telegram_reply(config, chat_id, response)
-                except Exception as exc:
-                    item["action"] = "bridge_codex_failed"
-                    item["error"] = str(exc)
-                    write_json(path, item)
-                    if not args.no_reply:
-                        telegram_reply(config, chat_id, f"Falha ao chamar Codex: {exc}")
+                execute_telegram_codex_item(
+                    root,
+                    config,
+                    path,
+                    item,
+                    chat_id,
+                    prompt_text,
+                    resume_last=bool(args.resume_last or not args.session_id),
+                    session_id=args.session_id,
+                    model=args.model,
+                    sandbox=args.sandbox,
+                    approval=args.approval,
+                    bypass=bool(args.bypass),
+                    timeout=args.codex_timeout,
+                    reply=not args.no_reply,
+                    start_message="Recebido. Vou chamar o Codex em paralelo.",
+                    completed_action="bridge_codex_completed",
+                    failed_action="bridge_codex_failed",
+                )
             else:
                 queue_path = queue_operator_message(root, item, prompt_text)
                 item["action"] = "bridge_queued"
