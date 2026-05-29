@@ -20,7 +20,7 @@ Versão do plano: 1.0 · Alvo: Harness v0.4 · Plataforma primária: Windows 11 
 | CLI dos agentes | **Multi-CLI configurável**: Codex e Claude Code, escolhível por agente/profile |
 | Acesso a estado | Node **lê** `.harness/*.json` direto; **muta** via CLI Python — e escritas do Python passam a ser **atômicas** (tmp + `os.replace`) |
 | Persistência PTY | Sessões **morrem no restart** do hub (v1); agentes marcados `offline`. Sem daemon |
-| Arte/assets | **Pack licenciado já no M1** (escolher/comprar + respeitar licença antes do M1) |
+| Arte/assets | **Kenney (CC0)** — tilesets variados, **1 tema de mapa por repo**; sem custo nem atribuição obrigatória (registramos mesmo assim em `LICENSES.md`) |
 | Entrega | Sistemas + fluxo, com visual pixel-art licenciado a partir do M1 |
 
 ---
@@ -214,7 +214,9 @@ Uma *tile layer* `collision` define onde dá pra andar.
 
 **Multi-repo**: começar com **overworld** (zoom-out, 1 prédio por repo); clicar
 entra no mapa daquele repo (cena Kaplay dedicada). Escala melhor que "uma sala
-por repo na mesma tela".
+por repo na mesma tela". **Cada repo recebe um tema visual diferente** (um tileset
+Kenney por mapa — ex.: vila, cidade moderna, masmorra), guardado num campo
+`theme` no registry do repo; assim repos distintos ficam visualmente distintos.
 
 ---
 
@@ -387,28 +389,41 @@ só do hub opcional.)
    reiniciar, os agentes são marcados `offline` no próximo snapshot e
    re-spawnados sob demanda. Daemon de PTY separado fica fora do v1.
 6. **Coordenação LLM↔LLM real** → **fora de escopo do v1** (só mailbox + visual).
-7. **Assets/licença** → **licenciar um pack já no M1** (não placeholder). Escolher
-   e licenciar 1 tileset + 1 sheet de personagem (com walk cycle) antes de iniciar
-   o M1, registrando a licença por asset. Ver §14.
+7. **Assets/licença** → **Kenney (CC0)**. Motivo: catálogo grande e **variado**,
+   permitindo **1 tema de tileset por repo** (casa com o overworld da §6), e
+   **CC0** (sem custo, sem atribuição obrigatória). Caveat: os personagens top-down
+   do Kenney têm **poucos frames** — não é walk cycle 4-direções completo.
+   Mitigação no v1: animação simples (bob/slide ao se mover) **ou** parear os
+   mapas Kenney com um sheet de personagem CC0 (ex.: Ninja Adventure). Licenças
+   registradas em `hub/client/assets/LICENSES.md`. Ver §14.
 
 ---
 
 ## 14. Assets (para chegar perto da referência)
 
-Decisão (§13.7): **o pack é licenciado já no M1** — nada de placeholder. Antes de
-iniciar o M1, escolher e licenciar **1 tileset + 1 sheet de personagem** com
-*walk cycle*. Fontes (conferir licença — varia entre CC0, grátis-com-atribuição
-e pago):
+Decisão (§13.7): **assets do Kenney (`kenney.nl`), licença CC0**. Sem custo, sem
+atribuição obrigatória (mas registramos em `LICENSES.md` mesmo assim). Escolhido
+pela variedade: **um tileset diferente por repo** (§6).
 
-- **LimeZu — Modern Interiors / Modern Exteriors** (personagens + interiores).
-- **Sprout Lands** (Cup Nooble) — floresta/fazenda aconchegante.
-- **Ninja Adventure Asset Pack** — amplo e permissivo.
-- **Cozy People / Cozy Farm** — personagens fofos com animação.
+**Tilesets candidatos (top-down, 16×16, CC0):**
 
-Escopo de arte do M1: o tileset + o sheet de personagem licenciados, com 5 paletas
-(uma cor por papel: builder, reviewer, security, planner, research). **Registrar a
-licença de cada asset** (URL, autor, termos, data) num `hub/client/assets/LICENSES.md`.
-Arte adicional entra depois sem mexer nos sistemas.
+| Pack Kenney | Tema sugerido de mapa | Bom para |
+|---|---|---|
+| Tiny Town | vila aconchegante (default) | repo "casa", look Stardew |
+| RPG Urban Pack | cidade moderna | repos de produto/web |
+| Tiny Dungeon / Roguelike Dungeon | masmorra | repos de infra/baixo nível |
+| Roguelike/RPG Pack (1700+ tiles) | RPG genérico amplo | base coringa de setores |
 
-> Ação pendente antes do M1: definir orçamento e escolher o pack. (Único item que
-> ainda exige uma escolha sua; não bloqueia o M0.)
+> Mapeamento `repo → theme` fica no registry do repo (§6). Começar com **Tiny Town**
+> como tema padrão e variar conforme novos repos entram.
+
+**Personagens (o caveat):** os sprites top-down do Kenney têm **poucos frames** —
+não entregam walk cycle 4-direções completo. Duas saídas para o M1:
+1. **Animação simples (recomendado p/ v1):** sprite do Kenney com *bob/slide* ao
+   mover (sem ciclo de passos). Mantém tudo CC0 e numa fonte só.
+2. **Parear com personagem CC0:** usar tilesets Kenney + um sheet de personagem
+   com walk 4-dir (ex.: **Ninja Adventure**, CC0) recolorido nas 5 paletas
+   (builder, reviewer, security, planner, research). Mais trabalho, visual melhor.
+
+**Registro de licença:** cada asset usado entra em `hub/client/assets/LICENSES.md`
+(pack, autor, URL, licença, data) — mesmo sendo CC0, para rastreabilidade.
