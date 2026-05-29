@@ -15,9 +15,13 @@ Versão do plano: 1.0 · Alvo: Harness v0.4 · Plataforma primária: Windows 11 
 | Tema | Decisão |
 |---|---|
 | Terminais | **Embutidos**: xterm.js no cliente + backend PTY próprio (não depender do wmux) |
+| Backend realtime | **Sidecar Node (`harness-hub`)** via `node-pty`/ConPTY; core Python segue zero-dep |
 | Engine de render | **Kaplay** (jogo 2D top-down, vendorizado no cliente) |
 | CLI dos agentes | **Multi-CLI configurável**: Codex e Claude Code, escolhível por agente/profile |
-| Entrega | Sistemas + fluxo (arte é placeholder até licenciar assets) |
+| Acesso a estado | Node **lê** `.harness/*.json` direto; **muta** via CLI Python — e escritas do Python passam a ser **atômicas** (tmp + `os.replace`) |
+| Persistência PTY | Sessões **morrem no restart** do hub (v1); agentes marcados `offline`. Sem daemon |
+| Arte/assets | **Pack licenciado já no M1** (escolher/comprar + respeitar licença antes do M1) |
+| Entrega | Sistemas + fluxo, com visual pixel-art licenciado a partir do M1 |
 
 ---
 
@@ -297,6 +301,11 @@ Spawnar terminal/LLM pela web **é RCE por design**. Requisitos:
 - [ ] Subcomando `agent kill <id>` (marca registry; o PTY é morto pelo Node).
 - [ ] Bloco `hub` no `command_init` (1862) e leitura via novo `hub_config()`.
 - [ ] Manter `dashboard hub-state --json` (5674) como fallback de snapshot.
+- [ ] **Escrita atômica** em `harness_core/storage.py`: `write_text`/`write_json`
+      hoje fazem `path.write_text(...)` (truncate-then-write), o que deixa o Node
+      ler `.harness/*.json` parcial durante um rewrite. Trocar por gravar em
+      `path` + sufixo temporário e `os.replace(tmp, path)` (atômico no Windows no
+      mesmo volume). **Pré-requisito do M0** (a estratégia ler-arquivos depende disso).
 - [ ] (Limpeza, do audit) extrair `render_dashboard_hub_html` gigante; o HTML
       passa a ser servido pelo Node como estático.
 
@@ -330,8 +339,10 @@ só do hub opcional.)
 
 ### M0 — Fundação
 - Servidor Node serve cliente Kaplay vazio + `/api/world` (lê `.harness/`).
-- Python: extrair o HTML gigante; manter `hub-state --json`.
-- **DoD**: `harness-hub` no ar; cliente carrega e lista repos/agentes do snapshot.
+- Python: **escrita atômica** em `storage.py` (tmp + `os.replace`); extrair o HTML
+  gigante; manter `hub-state --json`.
+- **DoD**: `harness-hub` no ar; cliente carrega e lista repos/agentes do snapshot
+  sem nunca ler JSON parcial durante uma escrita do CLI.
 
 ### M1 — Jogo de verdade
 - Tilemap (Tiled) + colisão + zonas de setor; sprites idle/walk; A*.
@@ -354,28 +365,38 @@ só do hub opcional.)
 
 ---
 
-## 13. Riscos e decisões em aberto (confirmar antes/no M0)
+## 13. Decisões fechadas (resolvidas em 2026-05-29)
 
-1. **Node sidecar vs Python puro**: escolhemos Node por causa do `node-pty`
-   (ConPTY confiável no Windows) e do ecossistema. Alternativa all-Python usaria
-   `pywinpty` + `websockets` (Windows-only no PTY, mais frágil). Confirmar Node.
-2. **Estado: ler arquivos vs CLI**: plano usa ler-arquivos p/ leitura e CLI p/
-   escrita. Validar que isso não cria corrida com escritas do próprio CLI
-   (writes são full-file rewrite; ler durante rewrite pode pegar parcial —
-   considerar escrita atômica via tmp+rename no Python).
-3. **ConPTY no Windows**: resize/ANSI/encoding podem ter quirks; testar cedo.
-4. **Caminho do drag-drop**: browser não dá caminho absoluto; usar input +
-   recentes (ou folder-picker nativo via Node, opcional).
-5. **Persistência de PTY**: sessões morrem se o Node reinicia — aceitável? Se
-   não, precisaria de um daemon de PTY separado.
-6. **Coordenação LLM↔LLM real**: fora de escopo do v1 (só mailbox + visual).
-7. **Assets/licença**: o "look" depende de tilesets/sprites licenciados (§14).
+1. **Node sidecar vs Python puro** → **Node sidecar (`harness-hub`)**. Motivo:
+   `node-pty` (ConPTY confiável no Windows) + ecossistema xterm.js, e o wmux já é
+   Node. A alternativa all-Python (`pywinpty` + `websockets`) é mais frágil no
+   PTY e exigiria reimplementar o transporte. O core Python (`bin/harness.py`)
+   permanece **zero-dep**; as deps de Node ficam só no hub opcional.
+2. **Estado: ler arquivos vs CLI** → **ler-arquivos p/ leitura + CLI p/ escrita**,
+   com as escritas do Python tornadas **atômicas**. Confirmado no código:
+   `write_text`/`write_json` (`harness_core/storage.py:15`) hoje fazem
+   truncate-then-write, então a corrida é real. Correção: gravar em arquivo
+   temporário + `os.replace()` (atômico no Windows, mesmo volume). Virou tarefa
+   de §10 e **pré-requisito do M0**.
+3. **ConPTY no Windows** → **mitigação, não bloqueio**. Testar resize/ANSI/encoding
+   logo no início do M2 (caminho mais arriscado); não muda a arquitetura.
+4. **Caminho do drag-drop** → **input de caminho absoluto + lista de recentes**.
+   O browser não entrega path local por segurança; folder-picker nativo via Node
+   fica como melhoria opcional futura.
+5. **Persistência de PTY** → **sessões morrem no restart do hub no v1**. Ao
+   reiniciar, os agentes são marcados `offline` no próximo snapshot e
+   re-spawnados sob demanda. Daemon de PTY separado fica fora do v1.
+6. **Coordenação LLM↔LLM real** → **fora de escopo do v1** (só mailbox + visual).
+7. **Assets/licença** → **licenciar um pack já no M1** (não placeholder). Escolher
+   e licenciar 1 tileset + 1 sheet de personagem (com walk cycle) antes de iniciar
+   o M1, registrando a licença por asset. Ver §14.
 
 ---
 
 ## 14. Assets (para chegar perto da referência)
 
-Engenharia entrega os sistemas; o visual depende de assets pixel-art com
+Decisão (§13.7): **o pack é licenciado já no M1** — nada de placeholder. Antes de
+iniciar o M1, escolher e licenciar **1 tileset + 1 sheet de personagem** com
 *walk cycle*. Fontes (conferir licença — varia entre CC0, grátis-com-atribuição
 e pago):
 
@@ -384,6 +405,10 @@ e pago):
 - **Ninja Adventure Asset Pack** — amplo e permissivo.
 - **Cozy People / Cozy Farm** — personagens fofos com animação.
 
-Plano mínimo de arte para o M1: 1 tileset de floresta + 1 sheet de personagem
-com 5 paletas (uma cor por papel: builder, reviewer, security, planner,
-research). Arte detalhada entra depois sem mexer nos sistemas.
+Escopo de arte do M1: o tileset + o sheet de personagem licenciados, com 5 paletas
+(uma cor por papel: builder, reviewer, security, planner, research). **Registrar a
+licença de cada asset** (URL, autor, termos, data) num `hub/client/assets/LICENSES.md`.
+Arte adicional entra depois sem mexer nos sistemas.
+
+> Ação pendente antes do M1: definir orçamento e escolher o pack. (Único item que
+> ainda exige uma escolha sua; não bloqueia o M0.)
