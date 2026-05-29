@@ -42,6 +42,13 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from harness_core.artifacts import (  # noqa: E402
+    artifact_id,
+    collect_run_artifacts,
+    iter_run_dirs,
+    load_artifacts,
+    save_artifacts,
+)
 from harness_core.clock import utc_now  # noqa: E402
 from harness_core.codex_exec import (  # noqa: E402
     build_codex_exec_argv,
@@ -261,19 +268,6 @@ def task_budget(task: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
     if isinstance(task.get("budget"), dict):
         budget.update(task["budget"])
     return budget
-
-
-def load_artifacts(root: Path) -> list[dict[str, Any]]:
-    return read_json(artifacts_index_path(root), [])
-
-
-def save_artifacts(root: Path, artifacts: list[dict[str, Any]]) -> None:
-    write_json(artifacts_index_path(root), artifacts)
-
-
-def artifact_id(task_id: str, path: Path) -> str:
-    digest = hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:10]
-    return f"ART-{task_id}-{digest}"
 
 
 def normalize_context_requirement(root: Path, item: Any) -> dict[str, Any]:
@@ -1176,60 +1170,6 @@ def render_resume_brief(root: Path, task_id: str, checkpoint: dict[str, Any]) ->
         "## Status do Git no checkpoint\n\n"
         f"```text\n{checkpoint.get('git_status') or 'sem status registrado'}\n```\n"
     )
-
-
-def iter_run_dirs(root: Path, task_id: str | None = None) -> list[Path]:
-    runs_root = harness_root(root) / "runs"
-    if task_id:
-        runs_root = runs_root / task_id
-    if not runs_root.exists():
-        return []
-
-    if task_id:
-        return sorted([path for path in runs_root.iterdir() if path.is_dir()])
-
-    run_dirs: list[Path] = []
-    for task_runs_root in sorted([path for path in runs_root.iterdir() if path.is_dir()]):
-        run_dirs.extend(sorted([path for path in task_runs_root.iterdir() if path.is_dir()]))
-    return run_dirs
-
-
-def collect_run_artifacts(root: Path, task_id: str | None = None) -> list[dict[str, Any]]:
-    artifacts: list[dict[str, Any]] = []
-    interesting = {
-        "builder-brief.md",
-        "evaluator-brief.md",
-        "evaluator-agent-handoff.md",
-        "greptile-reviewer-agent-handoff.md",
-        "review-consolidation.md",
-        "parallel-dispatch.md",
-        "events.jsonl",
-        "evaluation.json",
-        "plain-summary.md",
-        "run.json",
-    }
-    for run_dir in iter_run_dirs(root, task_id):
-        task = run_dir.parent.name
-        for path in sorted(run_dir.iterdir()):
-            if not path.is_file():
-                continue
-            if path.name in interesting or path.name.startswith("sensors") or path.name.startswith("fix-brief"):
-                artifacts.append(
-                    {
-                        "id": artifact_id(task, path),
-                        "task_id": task,
-                        "run_id": run_dir.name,
-                        "path": to_posix(path.relative_to(root)),
-                        "kind": path.suffix.lstrip(".") or "file",
-                        "label": path.name,
-                        "size": path.stat().st_size,
-                        "created_at": datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
-                        .replace(microsecond=0)
-                        .isoformat(),
-                    }
-                )
-    artifacts.extend(load_artifacts(root))
-    return artifacts
 
 
 def find_unevaluated_runs(root: Path, task_id: str | None = None) -> list[dict[str, Any]]:
