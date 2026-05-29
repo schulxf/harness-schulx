@@ -42,6 +42,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from harness_core.codex_exec import (  # noqa: E402
+    build_codex_exec_argv,
+    codex_executable,
+    codex_image_args_from_item,
+    codex_prompt_from_item,
+)
 from harness_core.compat import compatibility_manifest  # noqa: E402
 from harness_core.config import (  # noqa: E402
     active_profile,
@@ -1885,72 +1891,6 @@ def telegram_latest_plain_summary(root: Path, task_id: str) -> str:
 
 def telegram_reply(config: dict[str, Any], chat_id: str, text: str) -> None:
     telegram_send_message(config, text, [str(chat_id)])
-
-
-def codex_executable() -> str:
-    executable = shutil.which("codex")
-    if not executable:
-        raise HarnessError("codex nao encontrado no PATH.")
-    return executable
-
-
-def codex_prompt_from_item(item: dict[str, Any], prompt_text: str | None = None) -> str:
-    text = (prompt_text if prompt_text is not None else item.get("prompt_text") or "").strip()
-    media = item.get("media") or {}
-    header = (
-        "Mensagem recebida via Telegram pelo Harness.\n"
-        f"Chat: {item.get('chat_id')}\n"
-        f"Mensagem: {item.get('message_id')}\n\n"
-    )
-    if media.get("local_path") and media.get("local_path") not in text:
-        text = f"{text}\n\nArquivo anexado salvo em: {media.get('local_path')}".strip()
-    return header + (text or "Mensagem sem texto.")
-
-
-def codex_image_args_from_item(item: dict[str, Any]) -> list[str]:
-    media = item.get("media") or {}
-    path = media.get("local_path")
-    if item.get("kind") != "image" or not path:
-        return []
-    if not Path(path).exists():
-        return []
-    return ["-i", str(path)]
-
-
-def build_codex_exec_argv(
-    root: Path,
-    output_path: Path,
-    *,
-    resume_last: bool = False,
-    session_id: str | None = None,
-    model: str | None = None,
-    sandbox: str | None = None,
-    approval: str | None = None,
-    bypass: bool = False,
-    images: list[str] | None = None,
-) -> list[str]:
-    argv = [codex_executable(), "exec"]
-    if session_id or resume_last:
-        argv.append("resume")
-        if resume_last:
-            argv.append("--last")
-        elif session_id:
-            argv.append(session_id)
-    else:
-        argv.extend(["-C", str(root), "--skip-git-repo-check"])
-        if sandbox:
-            argv.extend(["-s", sandbox])
-        if approval:
-            argv.extend(["-a", approval])
-    if model:
-        argv.extend(["-m", model])
-    if bypass:
-        argv.append("--dangerously-bypass-approvals-and-sandbox")
-    if images:
-        for image in images:
-            argv.extend(["-i", image])
-    argv.extend(["-o", str(output_path), "-"])
-    return argv
 
 
 def run_codex_for_telegram(

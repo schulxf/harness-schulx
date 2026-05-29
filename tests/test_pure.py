@@ -6,6 +6,7 @@ import re
 
 import pytest
 
+from harness_core import codex_exec
 from tests.conftest import harness
 
 
@@ -248,7 +249,7 @@ def test_render_plain_summary_is_nontechnical():
 
 
 def test_build_codex_exec_argv_new_session(monkeypatch, tmp_path):
-    monkeypatch.setattr(harness.shutil, "which", lambda _: "codex")
+    monkeypatch.setattr(codex_exec.shutil, "which", lambda _: "codex")
     out = tmp_path / "out.txt"
     argv = harness.build_codex_exec_argv(
         tmp_path,
@@ -266,7 +267,7 @@ def test_build_codex_exec_argv_new_session(monkeypatch, tmp_path):
 
 
 def test_build_codex_exec_argv_resume_last(monkeypatch, tmp_path):
-    monkeypatch.setattr(harness.shutil, "which", lambda _: "codex")
+    monkeypatch.setattr(codex_exec.shutil, "which", lambda _: "codex")
     out = tmp_path / "out.txt"
     argv = harness.build_codex_exec_argv(tmp_path, out, resume_last=True)
     assert argv[:4] == ["codex", "exec", "resume", "--last"]
