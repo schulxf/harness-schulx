@@ -49,6 +49,7 @@ from harness_core.artifacts import (  # noqa: E402
     save_artifacts,
 )
 from harness_core.budgeting import task_budget  # noqa: E402
+from harness_core.builder_text import render_builder_brief, summarize_context  # noqa: E402,F401
 from harness_core.checkpoints import (  # noqa: E402
     create_checkpoint,
     latest_checkpoint_path,
@@ -425,16 +426,6 @@ def maybe_warn_unevaluated_runs(root: Path, config: dict[str, Any], task_id: str
         )
     if len(unevaluated) > 10:
         print(f"- ... mais {len(unevaluated) - 10} run(s)", file=sys.stderr)
-
-
-def summarize_context(root: Path) -> str:
-    manifest = read_json(context_manifest_path(root), [])
-    if not manifest:
-        return "- Nenhum arquivo de contexto ingerido ainda."
-    lines = []
-    for item in manifest:
-        lines.append(f"- {item['kind']}: {item['stored_path']} (origem: {item['source']})")
-    return "\n".join(lines)
 
 
 def command_init(args: argparse.Namespace) -> None:
@@ -1316,48 +1307,6 @@ def command_contract(args: argparse.Namespace) -> None:
         print("Documentos obrigatorios da task:")
         for doc in required_docs:
             print(f"- {doc}")
-
-
-def render_builder_brief(
-    root: Path,
-    task: dict[str, Any],
-    contract: dict[str, Any],
-    run_dir: Path,
-) -> str:
-    task_text = read_text(root / task["task_file"])
-    contract_text = json.dumps(contract, indent=2, ensure_ascii=False)
-    preflight_text = render_preflight_text(check_context_preflight(root, task["task_id"]))
-    git_status = git_output(root, ["status", "--short"]) if is_git_repo(root) else "Nao e um repo git."
-    return (
-        f"# Brief do implementador - {task['task_id']}\n\n"
-        "Voce esta implementando uma fatia vertical dentro do protocolo Harness.\n\n"
-        "## Regras\n\n"
-        "- Implemente apenas a task contratada.\n"
-        "- Use TDD: um teste de comportamento, implementacao minima, repetir.\n"
-        "- Nao adicione funcionalidades fora de escopo.\n"
-        "- Nao declare concluido sem evidencia de sensores.\n"
-        "- Atualize notas de progresso se comportamento ou escopo mudarem.\n\n"
-        "## Arquivos de contexto\n\n"
-        f"{summarize_context(root)}\n\n"
-        "## Memoria do projeto\n\n"
-        f"{render_memory_context(root, task['task_id'])}\n\n"
-        "## Preflight de contexto\n\n"
-        f"```text\n{preflight_text}\n```\n\n"
-        "## Tarefa\n\n"
-        f"{task_text}\n\n"
-        "## Contrato\n\n"
-        f"```json\n{contract_text}\n```\n\n"
-        "## Status atual do Git\n\n"
-        f"```text\n{git_status}\n```\n\n"
-        "## Depois da implementacao\n\n"
-        "Revise os comandos de sensores antes de executar. Depois rode:\n\n"
-        f"`python {Path(__file__).resolve()} --repo {root} sensors {task['task_id']} --tier quick --reviewed`\n\n"
-        "Para o fechamento final, rode:\n\n"
-        f"`python {Path(__file__).resolve()} --repo {root} sensors {task['task_id']} --tier full --reviewed`\n\n"
-        "Em seguida, peca avaliacao contratual e review Greptile-style usando os handoffs gerados por:\n\n"
-        f"`python {Path(__file__).resolve()} --repo {root} evaluate {task['task_id']}`\n\n"
-        f"Diretorio da run: `{run_dir}`\n"
-    )
 
 
 def command_start(args: argparse.Namespace) -> None:
