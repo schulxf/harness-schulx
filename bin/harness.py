@@ -20,7 +20,6 @@ if sys.version_info < (3, 10):
 import argparse
 import base64
 import copy
-import hashlib
 import html
 import json
 import mimetypes
@@ -103,6 +102,7 @@ from harness_core.events import (  # noqa: E402
     read_recent_harness_events,
     telegram_message_from_harness_event,
 )
+from harness_core.file_hash import file_sha256  # noqa: E402
 from harness_core.git_helpers import (  # noqa: E402
     current_git_branch,
     git_output,
@@ -210,14 +210,6 @@ from harness_core.telegram_policy import (  # noqa: E402
 )
 
 VERSION = "0.3.0"
-
-def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
 
 def root_from_args(args: argparse.Namespace) -> Path:
     return Path(args.repo).expanduser().resolve()
