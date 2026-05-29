@@ -177,6 +177,122 @@ function findConfiguredRepo(controlRoot, watchRepos, value) {
   return match;
 }
 
+const FILE_BROWSER_IGNORED_DIRS = new Set([
+  ".git",
+  ".harness",
+  ".next",
+  ".nuxt",
+  ".svelte-kit",
+  ".venv",
+  "__pycache__",
+  "build",
+  "coverage",
+  "dist",
+  "node_modules",
+  "target",
+]);
+
+const FILE_BROWSER_PRIORITY_NAMES = new Set([
+  "README.md",
+  "package.json",
+  "pyproject.toml",
+  "requirements.txt",
+  "vite.config.js",
+  "next.config.js",
+  "tsconfig.json",
+]);
+
+const FILE_BROWSER_PRIORITY_EXTS = new Set([
+  ".js",
+  ".jsx",
+  ".ts",
+  ".tsx",
+  ".py",
+  ".md",
+  ".json",
+  ".css",
+  ".html",
+  ".toml",
+  ".yml",
+  ".yaml",
+]);
+
+function repoRelativePath(repoRoot, fullPath) {
+  return path.relative(repoRoot, fullPath).split(path.sep).join("/");
+}
+
+function fileBrowserScore(file) {
+  let score = file.depth * 20;
+  if (FILE_BROWSER_PRIORITY_NAMES.has(file.name)) {
+    score -= 80;
+  }
+  if (FILE_BROWSER_PRIORITY_EXTS.has(file.ext)) {
+    score -= 30;
+  }
+  if (file.path.includes("/src/") || file.path.startsWith("src/")) {
+    score -= 20;
+  }
+  if (file.path.includes("/test") || file.path.includes("/tests/")) {
+    score += 10;
+  }
+  return score;
+}
+
+function listRepoFiles(repoRoot, options = {}) {
+  const root = path.resolve(String(repoRoot || ""));
+  const limit = Math.max(1, Math.min(500, Number.parseInt(options.limit, 10) || 180));
+  const maxDepth = Math.max(1, Math.min(10, Number.parseInt(options.maxDepth, 10) || 6));
+  const found = [];
+  let visited = 0;
+  const maxVisited = Math.max(limit * 25, 1000);
+
+  function walk(dir, depth) {
+    if (depth > maxDepth || visited >= maxVisited) {
+      return;
+    }
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (_err) {
+      return;
+    }
+    entries.sort((left, right) => {
+      if (left.isDirectory() !== right.isDirectory()) {
+        return left.isDirectory() ? -1 : 1;
+      }
+      return left.name.localeCompare(right.name);
+    });
+    for (const entry of entries) {
+      if (visited >= maxVisited) {
+        break;
+      }
+      const fullPath = path.join(dir, entry.name);
+      visited += 1;
+      if (entry.isDirectory()) {
+        if (!FILE_BROWSER_IGNORED_DIRS.has(entry.name)) {
+          walk(fullPath, depth + 1);
+        }
+        continue;
+      }
+      if (!entry.isFile()) {
+        continue;
+      }
+      const relative = repoRelativePath(root, fullPath);
+      found.push({
+        path: relative,
+        name: entry.name,
+        ext: path.extname(entry.name).toLowerCase(),
+        depth,
+      });
+    }
+  }
+
+  walk(root, 0);
+  return found
+    .sort((left, right) => fileBrowserScore(left) - fileBrowserScore(right) || left.path.localeCompare(right.path))
+    .slice(0, limit);
+}
+
 function loadAgents(repoRoot) {
   const payload = readJson(path.join(harnessRoot(repoRoot), "agents", "registry.json"), { agents: [] });
   return arrayFromPayload(payload, ["agents"]).filter((agent) => agent && typeof agent === "object");
@@ -640,6 +756,7 @@ module.exports = {
   findAgentRepo,
   findConfiguredRepo,
   harnessRoot,
+  listRepoFiles,
   loadAgents,
   loadHubRepoRegistry,
   loadRepoConfig,

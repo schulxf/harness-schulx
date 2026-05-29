@@ -1045,6 +1045,47 @@ textarea.field-control {
 }
 .am-hint { font-size: 12px; color: var(--muted); line-height: 1.5; }
 .am-hint code { background: var(--bg); padding: 1px 5px; border-radius: 4px; border: 1px solid var(--line); }
+.am-file-note { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
+.am-file-note--error { color: #f3c4bd; }
+.am-file-list {
+  display: grid;
+  gap: 5px;
+  max-height: 220px;
+  overflow: auto;
+  padding-right: 2px;
+}
+.am-file-button {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  padding: 6px 7px;
+  text-align: left;
+  color: var(--ink);
+  background: rgba(8, 12, 8, .5);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.am-file-button:hover,
+.am-file-button:focus-visible {
+  border-color: var(--blue);
+  outline: none;
+}
+.am-file-name {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.am-file-path {
+  overflow: hidden;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .am-term { min-width: 0; display: flex; flex-direction: column; background: #0c100c; }
 .am-term-bar {

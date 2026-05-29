@@ -58,3 +58,20 @@ test("readNewEventsForRepos tails events.jsonl by offset", () => {
   const second = harness.readNewEventsForRepos([repo], String(first.offset));
   assert.equal(second.events.length, 0);
 });
+
+test("listRepoFiles returns useful files and skips generated state", () => {
+  const repo = makeRepo();
+  fs.mkdirSync(path.join(repo, "src"), { recursive: true });
+  fs.mkdirSync(path.join(repo, "node_modules", "pkg"), { recursive: true });
+  fs.writeFileSync(path.join(repo, "README.md"), "# Demo\n", "utf8");
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "console.log('ok');\n", "utf8");
+  fs.writeFileSync(path.join(repo, "node_modules", "pkg", "index.js"), "", "utf8");
+  fs.writeFileSync(path.join(repo, ".harness", "internal.txt"), "", "utf8");
+
+  const files = harness.listRepoFiles(repo, { limit: 20 }).map((file) => file.path);
+
+  assert.ok(files.includes("README.md"));
+  assert.ok(files.includes("src/app.js"));
+  assert.equal(files.some((file) => file.startsWith(".harness/")), false);
+  assert.equal(files.some((file) => file.startsWith("node_modules/")), false);
+});

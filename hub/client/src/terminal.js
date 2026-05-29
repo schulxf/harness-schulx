@@ -34,6 +34,13 @@ function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+function quoteTerminalPath(value) {
+  const pathText = String(value || "");
+  if (!pathText) return "";
+  if (!/[\s"'`$]/.test(pathText)) return `${pathText} `;
+  return `"${pathText.replace(/(["`$\\])/g, "\\$1")}" `;
+}
+
 export class AgentTerminal {
   constructor(root, handlers = {}) {
     this.root = root;
@@ -45,6 +52,9 @@ export class AgentTerminal {
     this.term = null;
     this.fit = null;
     this.connected = false;
+    this.files = [];
+    this.filesState = "idle";
+    this.filesError = "";
 
     this.els = {
       avatar: root.querySelector("#amAvatar"),
@@ -56,6 +66,7 @@ export class AgentTerminal {
       mount: root.querySelector("#amTerm"),
     };
 
+    this.els.info.addEventListener("click", (event) => this.handleInfoClick(event));
     root.querySelectorAll("[data-close]").forEach((el) => el.addEventListener("click", () => this.close()));
     root.querySelector("#amReconnect").addEventListener("click", () => this.connect());
     root.querySelector("#amClear").addEventListener("click", () => this.term && this.term.clear());
@@ -88,6 +99,7 @@ export class AgentTerminal {
     this.root.hidden = false;
     this.renderHeader();
     this.ensureTerm();
+    this.loadRepoFiles();
     requestAnimationFrame(() => { this.refit(); this.focus(); });
     this.connect();
   }
@@ -100,7 +112,11 @@ export class AgentTerminal {
     this.els.name.textContent = a.name || a.id;
     this.els.sub.innerHTML = `<span style="color:${meta.color}">${esc(meta.label)}</span> · ${esc(activityLabel(a))}`;
     this.els.termTitle.textContent = `${a.cli || "terminal"} — ${this.repo?.project || ""}`;
-    this.els.info.innerHTML = this.infoHtml(a);
+    this.renderInfo();
+  }
+
+  renderInfo() {
+    this.els.info.innerHTML = this.infoHtml(this.agent);
   }
 
   infoHtml(a) {
@@ -121,7 +137,72 @@ export class AgentTerminal {
         <dl class="am-grid">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v || "-")}</dd>`).join("")}</dl>
       </div>
       ${a.speech ? `<div class="am-speech">“${esc(a.speech)}”</div>` : ""}
+      ${this.filesHtml()}
       <div class="am-hint">Type directly in the terminal. <b>Ctrl+C</b> interrupts. Run <code>claude</code> or <code>codex</code> to start an LLM session.</div>`;
+  }
+
+  filesHtml() {
+    if (this.filesState === "loading") {
+      return `<div class="am-info-block"><h3>Files</h3><p class="am-file-note">Loading repository files...</p></div>`;
+    }
+    if (this.filesState === "error") {
+      return `<div class="am-info-block"><h3>Files</h3><p class="am-file-note am-file-note--error">${esc(this.filesError || "Could not load files.")}</p></div>`;
+    }
+    if (!this.files.length) {
+      return `<div class="am-info-block"><h3>Files</h3><p class="am-file-note">No files found yet.</p></div>`;
+    }
+    return `
+      <div class="am-info-block">
+        <h3>Files</h3>
+        <div class="am-file-list">
+          ${this.files.map((file) => `
+            <button class="am-file-button" type="button" data-file-path="${esc(file.path)}" title="${esc(file.path)}">
+              <span class="am-file-name">${esc(file.name || file.path)}</span>
+              <span class="am-file-path">${esc(file.path)}</span>
+            </button>
+          `).join("")}
+        </div>
+      </div>`;
+  }
+
+  async loadRepoFiles() {
+    const hub = this.handlers.hub;
+    const repoRoot = this.repo?.root || this.agent?.repo_root || "";
+    if (!hub || typeof hub.getJson !== "function" || !repoRoot) {
+      this.files = [];
+      this.filesState = "idle";
+      this.filesError = "";
+      this.renderInfo();
+      return;
+    }
+    this.files = [];
+    this.filesState = "loading";
+    this.filesError = "";
+    this.renderInfo();
+    const expectedRoot = repoRoot;
+    try {
+      const response = await hub.getJson(`/api/repo-files?repo=${encodeURIComponent(repoRoot)}&limit=140`);
+      if ((this.repo?.root || this.agent?.repo_root || "") !== expectedRoot) {
+        return;
+      }
+      this.files = Array.isArray(response.files) ? response.files : [];
+      this.filesState = "ready";
+      this.filesError = "";
+    } catch (error) {
+      this.files = [];
+      this.filesState = "error";
+      this.filesError = error?.message || "Could not load files.";
+    }
+    this.renderInfo();
+  }
+
+  handleInfoClick(event) {
+    const button = event.target.closest("[data-file-path]");
+    if (!button) return;
+    const filePath = button.dataset.filePath || "";
+    if (!filePath) return;
+    this.sendInput(quoteTerminalPath(filePath));
+    this.focus();
   }
 
   focus() { try { this.term && this.term.focus(); } catch (_) { /* */ } }

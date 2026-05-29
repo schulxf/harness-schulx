@@ -16,9 +16,9 @@ function makeControlRepo() {
   return root;
 }
 
-function get(port, requestPath) {
+function get(port, requestPath, headers = {}) {
   return new Promise((resolve, reject) => {
-    http.get({ host: "127.0.0.1", port, path: requestPath }, (res) => {
+    http.get({ host: "127.0.0.1", port, path: requestPath, headers }, (res) => {
       let body = "";
       res.setEncoding("utf8");
       res.on("data", (chunk) => {
@@ -44,4 +44,28 @@ test("served index injects the local hub token for same-origin browser actions",
   assert.equal(response.status, 200);
   assert.match(response.body, /window\.HARNESS_HUB_TOKEN="unit-token"/);
   assert.equal(response.headers["cache-control"], "no-store");
+});
+
+test("repo files endpoint requires token and lists registered repo files", async (t) => {
+  const repo = makeControlRepo();
+  fs.mkdirSync(path.join(repo, "src"), { recursive: true });
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "console.log('ok');\n", "utf8");
+  const { server } = createServer({
+    repo,
+    watchRepos: [],
+    token: "unit-token",
+  });
+  t.after(() => server.close());
+
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  const denied = await get(port, `/api/repo-files?repo=${encodeURIComponent(repo)}`);
+  const allowed = await get(port, `/api/repo-files?repo=${encodeURIComponent(repo)}`, {
+    "X-Harness-Hub-Token": "unit-token",
+  });
+  const payload = JSON.parse(allowed.body);
+
+  assert.equal(denied.status, 403);
+  assert.equal(allowed.status, 200);
+  assert.ok(payload.files.some((file) => file.path === "src/app.js"));
 });

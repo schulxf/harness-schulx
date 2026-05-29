@@ -301,6 +301,19 @@ async function handleCreateProject(body, context) {
   return { ok: true, ...result };
 }
 
+function handleRepoFiles(urlObject, context) {
+  const repoRoot = harness.findConfiguredRepo(
+    context.controlRoot,
+    context.watchRepos,
+    urlObject.searchParams.get("repo")
+  );
+  const files = harness.listRepoFiles(repoRoot, {
+    limit: urlObject.searchParams.get("limit"),
+    maxDepth: urlObject.searchParams.get("max_depth"),
+  });
+  return { ok: true, repo: repoRoot, files };
+}
+
 function writeSse(res, eventName, payload, id) {
   if (id) {
     res.write(`id: ${id}\n`);
@@ -355,6 +368,13 @@ async function routeRequest(req, res, context) {
       return;
     }
     sendJson(res, 200, harness.collectWorld(context));
+    return;
+  }
+  if (req.method === "GET" && urlObject.pathname === "/api/repo-files") {
+    if (!mutableAuthorized(req, res, context.token, urlObject)) {
+      return;
+    }
+    sendJson(res, 200, handleRepoFiles(urlObject, context));
     return;
   }
   if (req.method === "GET" && urlObject.pathname === "/api/events") {

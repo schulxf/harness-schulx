@@ -151,4 +151,11 @@ export class HubClient {
     if (data?.action_token) this.setToken(data.action_token);
     return data;
   }
+
+  async getJson(path) {
+    if (!canUseApi()) throw new Error("GET actions require the hub sidecar.");
+    const data = await fetchJson(this.apiUrl(path), { headers: this.headers() });
+    if (data?.action_token) this.setToken(data.action_token);
+    return data;
+  }
 }
