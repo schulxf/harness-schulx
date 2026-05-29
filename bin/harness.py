@@ -123,6 +123,7 @@ from harness_core.git_helpers import (  # noqa: E402
 from harness_core.hub_agents import (  # noqa: E402
     hub_agent_name_for_role,
 )
+from harness_core.hub_auth import hub_action_authorized, hub_local_request_allowed  # noqa: E402
 from harness_core.hub_registry import load_hub_repo_registry, save_hub_repo_registry  # noqa: E402
 from harness_core.hub_state import (  # noqa: E402
     collect_dashboard_hub_state,
@@ -2195,14 +2196,6 @@ def hub_repo_paths(args: argparse.Namespace) -> list[Path]:
         seen.add(key)
         paths.append(path)
     return paths
-
-
-def hub_local_request_allowed(client_host: str) -> bool:
-    return client_host in {"127.0.0.1", "::1", "localhost"}
-
-
-def hub_action_authorized(client_host: str, supplied_token: str, action_token: str) -> bool:
-    return hub_local_request_allowed(client_host) and bool(action_token and supplied_token == action_token)
 
 
 def command_dashboard_html(args: argparse.Namespace) -> None:
