@@ -17,8 +17,23 @@ function configuredHubBase() {
 
 async function fetchJson(url, options = {}) {
   const response = await fetch(url, { cache: "no-store", ...options });
-  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-  return response.json();
+  const text = await response.text();
+  let payload = {};
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch (_error) {
+      payload = { text };
+    }
+  }
+  if (!response.ok) {
+    const message = payload?.error ? `${response.status} ${payload.error}` : `${response.status} ${response.statusText}`;
+    const error = new Error(message);
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
+  }
+  return payload;
 }
 
 export class HubClient {
