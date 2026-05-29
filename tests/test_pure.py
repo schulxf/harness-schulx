@@ -6,7 +6,7 @@ import re
 
 import pytest
 
-from harness_core import codex_exec
+from harness_core import codex_exec, sensors, storage
 from tests.conftest import harness
 
 
@@ -211,9 +211,9 @@ def test_hub_action_auth_requires_loopback_and_token():
 def test_read_jsonl_tail_reads_only_recent_records(tmp_path):
     path = tmp_path / "events.jsonl"
     for index in range(20):
-        harness.append_jsonl(path, {"index": index})
+        storage.append_jsonl(path, {"index": index})
 
-    assert [item["index"] for item in harness.read_jsonl_tail(path, 3)] == [17, 18, 19]
+    assert [item["index"] for item in storage.read_jsonl_tail(path, 3)] == [17, 18, 19]
 
 
 def test_render_dashboard_hub_html_uses_static_assets_and_safe_bootstrap_json():
@@ -306,11 +306,11 @@ def test_mirror_message_from_tool_call_when_enabled():
 
 def test_sensor_tiers_include_legacy_full():
     contract = {"required_sensors": ["npm test"]}
-    tiers = harness.normalize_sensor_tiers(contract)
+    tiers = sensors.normalize_sensor_tiers(contract)
     assert tiers["smoke"] == []
     assert tiers["affected"] == []
     assert tiers["full"] == ["npm test"]
-    assert harness.sensors_for_tier(contract, "all") == ["npm test"]
+    assert sensors.sensors_for_tier(contract, "all") == ["npm test"]
 
 
 def test_blocking_findings_from_review_detects_p0_p1():
@@ -349,11 +349,11 @@ def test_render_evaluation_markdown_without_gaps_uses_placeholder():
 
 
 def test_split_sensor_command_simple():
-    assert harness.split_sensor_command("npm test") == ["npm", "test"]
+    assert sensors.split_sensor_command("npm test") == ["npm", "test"]
 
 
 def test_split_sensor_command_handles_flags():
-    assert harness.split_sensor_command("npm run typecheck") == [
+    assert sensors.split_sensor_command("npm run typecheck") == [
         "npm",
         "run",
         "typecheck",
@@ -362,16 +362,16 @@ def test_split_sensor_command_handles_flags():
 
 def test_resolve_sensor_argv_passthrough_when_not_found():
     # An obviously-nonexistent command shouldn't blow up; it just returns argv as-is.
-    out = harness.resolve_sensor_argv(["__definitely_not_a_real_binary__", "--flag"])
+    out = sensors.resolve_sensor_argv(["__definitely_not_a_real_binary__", "--flag"])
     assert out == ["__definitely_not_a_real_binary__", "--flag"]
 
 
 def test_resolve_sensor_argv_empty():
-    assert harness.resolve_sensor_argv([]) == []
+    assert sensors.resolve_sensor_argv([]) == []
 
 
 def test_make_sensor_result_includes_extras():
-    r = harness.make_sensor_result(
+    r = sensors.make_sensor_result(
         command="npm test",
         argv=["npm", "test"],
         resolved_argv=["/usr/bin/npm", "test"],
