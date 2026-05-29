@@ -820,6 +820,16 @@ def raise_harness_http_error(exc: urllib.error.HTTPError) -> None:
     raise HarnessError(f"HTTP {exc.code}: {detail}") from exc
 
 
+def open_json_request(request: urllib.request.Request, *, timeout: int) -> dict[str, Any]:
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise_harness_http_error(exc)
+    except urllib.error.URLError as exc:
+        raise HarnessError(f"Erro de rede: {exc.reason}") from exc
+
+
 def http_json_post(
     url: str,
     payload: dict[str, Any],
@@ -837,13 +847,7 @@ def http_json_post(
         },
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        raise_harness_http_error(exc)
-    except urllib.error.URLError as exc:
-        raise HarnessError(f"Erro de rede: {exc.reason}") from exc
+    return open_json_request(request, timeout=timeout)
 
 
 def http_multipart_post(
@@ -882,13 +886,7 @@ def http_multipart_post(
         },
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        raise_harness_http_error(exc)
-    except urllib.error.URLError as exc:
-        raise HarnessError(f"Erro de rede: {exc.reason}") from exc
+    return open_json_request(request, timeout=timeout)
 
 
 def telegram_token(config: dict[str, Any]) -> str:
@@ -2602,10 +2600,7 @@ def handle_telegram_update(
 
 
 def command_task_create(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    require_safe_branch(root, args, "task create")
+    root = prepared_repo(args, safe_operation="task create")
     body = args.body or ""
     if args.from_file:
         source_path = Path(args.from_file).expanduser().resolve()
@@ -2621,10 +2616,7 @@ def command_task_create(args: argparse.Namespace) -> None:
 
 
 def command_task_import(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    require_safe_branch(root, args, "task import")
+    root = prepared_repo(args, safe_operation="task import")
     for raw in args.files:
         source = Path(raw).expanduser().resolve()
         if not source.exists():
@@ -2636,9 +2628,7 @@ def command_task_import(args: argparse.Namespace) -> None:
 
 
 def command_task_list(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     tasks = load_tasks(root)
     if not tasks:
         print("Nenhuma task ainda.")
@@ -2648,9 +2638,7 @@ def command_task_list(args: argparse.Namespace) -> None:
 
 
 def command_pick(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     for task in load_tasks(root):
         if task["status"] not in {"passed", "done"}:
             print(f"{task['task_id']} [{task['status']}] {task['title']}")
@@ -2669,10 +2657,7 @@ def next_queue_id(root: Path) -> str:
 
 
 def command_queue_add(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    require_safe_branch(root, args, "queue add")
+    root = prepared_repo(args, safe_operation="queue add")
     task_id = None
     title = args.title
     body = args.body or ""
@@ -2713,9 +2698,7 @@ def command_queue_add(args: argparse.Namespace) -> None:
 
 
 def command_queue_list(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     items = sorted_queue_items(load_queue(root))
     if args.json:
         print(json.dumps(items, indent=2, ensure_ascii=False))
@@ -2729,9 +2712,7 @@ def command_queue_list(args: argparse.Namespace) -> None:
 
 
 def command_queue_next(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     item = active_queue_item(root) if args.include_active else None
     item = item or next_queued_item(root)
     if not item:
@@ -2753,10 +2734,7 @@ def command_queue_next(args: argparse.Namespace) -> None:
 
 
 def command_queue_done(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    require_safe_branch(root, args, "queue done")
+    root = prepared_repo(args, safe_operation="queue done")
     item = update_queue_item(
         root,
         args.queue_id,
@@ -2778,10 +2756,7 @@ def command_queue_done(args: argparse.Namespace) -> None:
 
 
 def command_profile_add(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    require_safe_branch(root, args, "profile add")
+    root = prepared_repo(args, safe_operation="profile add")
     config = load_config(root)
     profiles = config.setdefault("profiles", {})
     profiles[args.name] = {
@@ -2795,9 +2770,7 @@ def command_profile_add(args: argparse.Namespace) -> None:
 
 
 def command_profile_list(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     config = load_config(root)
     custom = config.get("profiles", {})
     if not custom and not operation_profiles(config):
@@ -2814,10 +2787,7 @@ def command_profile_list(args: argparse.Namespace) -> None:
 
 
 def command_profile_set(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    require_safe_branch(root, args, "profile set")
+    root = prepared_repo(args, safe_operation="profile set")
     config = load_config(root)
     active_profile_name(config, args.name)
     config["active_profile"] = args.name
@@ -2826,10 +2796,7 @@ def command_profile_set(args: argparse.Namespace) -> None:
 
 
 def command_budget_set(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    require_safe_branch(root, args, "budget set")
+    root = prepared_repo(args, safe_operation="budget set")
     config = load_config(root)
     budgets = config.setdefault("budgets", {})
     budgets[args.name] = {
@@ -2842,10 +2809,7 @@ def command_budget_set(args: argparse.Namespace) -> None:
 
 
 def command_budget_task_set(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    require_safe_branch(root, args, "budget task-set")
+    root = prepared_repo(args, safe_operation="budget task-set")
     budget = {
         "profile": args.profile,
         "time_budget_minutes": args.minutes,
@@ -2857,9 +2821,7 @@ def command_budget_task_set(args: argparse.Namespace) -> None:
 
 
 def command_budget_list(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     config = load_config(root)
     budgets = config.get("budgets", {})
     if not budgets:
@@ -2883,10 +2845,7 @@ def next_memory_id(root: Path) -> str:
 
 
 def command_memory_remember(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    require_safe_branch(root, args, "memory remember")
+    root = prepared_repo(args, safe_operation="memory remember")
     entries = load_memory(root)
     entry = {
         "id": next_memory_id(root),
@@ -2901,9 +2860,7 @@ def command_memory_remember(args: argparse.Namespace) -> None:
 
 
 def command_memory_list(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     entries = load_memory(root)
     if args.tag:
         entries = [entry for entry in entries if args.tag in set(entry.get("tags") or [])]
@@ -3052,10 +3009,7 @@ def render_builder_brief(
 
 
 def command_start(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    require_safe_branch(root, args, "start")
+    root = prepared_repo(args, safe_operation="start")
     config = load_config(root)
     maybe_warn_unevaluated_runs(root, config, args.task_id)
     task = find_task(root, args.task_id)
@@ -3083,10 +3037,7 @@ def command_start(args: argparse.Namespace) -> None:
 
 
 def command_sensors(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    require_safe_branch(root, args, "sensors")
+    root = prepared_repo(args, safe_operation="sensors")
     contract = load_contract(root, args.task_id)
     run_dir = latest_run_dir(root, args.task_id)
     tier = args.tier
@@ -3544,10 +3495,7 @@ def render_fix_brief(
 
 
 def command_fix_brief(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    require_safe_branch(root, args, "fix-brief")
+    root = prepared_repo(args, safe_operation="fix-brief")
     config = load_config(root)
     task = find_task(root, args.task_id)
     contract = load_contract(root, args.task_id)
@@ -3629,10 +3577,7 @@ def next_run_checkpoint_path(run_dir: Path) -> Path:
 
 
 def command_checkpoint_create(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    require_safe_branch(root, args, "checkpoint create")
+    root = prepared_repo(args, safe_operation="checkpoint create")
     find_task(root, args.task_id)
     run_dir = latest_run_dir_or_none(root, args.task_id)
     payload = {
@@ -3660,9 +3605,7 @@ def command_checkpoint_create(args: argparse.Namespace) -> None:
 
 
 def command_checkpoint_resume_plan(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     find_task(root, args.task_id)
     run_dir = latest_run_dir_or_none(root, args.task_id)
     checkpoint: dict[str, Any] = {}
@@ -3689,10 +3632,7 @@ def command_checkpoint_resume_plan(args: argparse.Namespace) -> None:
 
 
 def command_artifacts_add(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    require_safe_branch(root, args, "artifacts add")
+    root = prepared_repo(args, safe_operation="artifacts add")
     source = resolve_repo_path(root, args.path)
     if not source.exists():
         raise SystemExit(f"Artifact nao encontrado: {source}")
@@ -3725,9 +3665,7 @@ def command_artifacts_add(args: argparse.Namespace) -> None:
 
 
 def command_artifacts_list(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     artifacts = collect_run_artifacts(root, args.task_id)
     if args.json:
         print(json.dumps(artifacts, indent=2, ensure_ascii=False))
@@ -4467,9 +4405,7 @@ def render_dashboard_html(root: Path, state: dict[str, Any]) -> str:
 
 
 def command_dashboard_html(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     state = collect_dashboard_state(root)
     path = dashboard_root(root) / "index.html"
     write_text(path, render_dashboard_html(root, state))
@@ -4478,9 +4414,7 @@ def command_dashboard_html(args: argparse.Namespace) -> None:
 
 
 def command_dashboard_hub(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     paths = hub_repo_paths(args)
     result = write_dashboard_hub(root, paths, args.refresh_seconds)
     print(f"Harness Hub: {result['path']}")
@@ -4491,9 +4425,7 @@ def command_dashboard_hub(args: argparse.Namespace) -> None:
 
 
 def command_dashboard_hub_add_repo(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     repos = load_hub_repo_registry(root)
     added: list[str] = []
     for raw in args.path:
@@ -4511,9 +4443,7 @@ def command_dashboard_hub_add_repo(args: argparse.Namespace) -> None:
 
 
 def command_dashboard_hub_remove_repo(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     remove = {normalize_path_key(Path(raw).expanduser().resolve()) for raw in args.path}
     repos = [repo for repo in load_hub_repo_registry(root) if normalize_path_key(Path(repo)) not in remove]
     save_hub_repo_registry(root, repos)
@@ -4522,9 +4452,7 @@ def command_dashboard_hub_remove_repo(args: argparse.Namespace) -> None:
 
 
 def command_dashboard_hub_list_repos(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     repos = load_hub_repo_registry(root)
     if args.json:
         print(json.dumps({"repos": repos}, indent=2, ensure_ascii=False))
@@ -4537,9 +4465,7 @@ def command_dashboard_hub_list_repos(args: argparse.Namespace) -> None:
 
 
 def command_dashboard_hub_state(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     paths = hub_repo_paths(args)
     state = collect_dashboard_hub_state(paths)
     path = dashboard_hub_root(root) / "hub-state.json"
@@ -4548,9 +4474,7 @@ def command_dashboard_hub_state(args: argparse.Namespace) -> None:
 
 
 def command_agent_register(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     task_title = ""
     if args.task_id:
         try:
@@ -4582,9 +4506,7 @@ def command_agent_register(args: argparse.Namespace) -> None:
 
 
 def command_agent_heartbeat(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     registry = load_agent_registry(root)
     agents = [agent for agent in registry.get("agents", []) if isinstance(agent, dict)]
     agent = next((item for item in agents if item.get("id") == args.agent_id), None)
@@ -4612,9 +4534,7 @@ def command_agent_heartbeat(args: argparse.Namespace) -> None:
 
 
 def command_agent_done(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     registry = load_agent_registry(root)
     agents = [agent for agent in registry.get("agents", []) if isinstance(agent, dict)]
     agent = next((item for item in agents if item.get("id") == args.agent_id), None)
@@ -4638,9 +4558,7 @@ def command_agent_done(args: argparse.Namespace) -> None:
 
 
 def command_agent_list(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     agents = load_agent_registry(root).get("agents", [])
     if args.json:
         print(json.dumps(agents, indent=2, ensure_ascii=False))
@@ -4653,9 +4571,7 @@ def command_agent_list(args: argparse.Namespace) -> None:
 
 
 def command_events_list(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     events = read_recent_harness_events(root, limit=args.limit, task_id=args.task_id)
     if args.json:
         print(json.dumps(events, indent=2, ensure_ascii=False))
@@ -4673,9 +4589,7 @@ def command_dashboard_hub_serve(args: argparse.Namespace) -> None:
     import functools
     import http.server
 
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     paths = hub_repo_paths(args)
     action_token = uuid.uuid4().hex
     cache_ttl_seconds = max(1.0, float(args.refresh_seconds) + 0.5)
@@ -4802,9 +4716,7 @@ def command_dashboard_serve(args: argparse.Namespace) -> None:
     import functools
     import http.server
 
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     command_dashboard_html(argparse.Namespace(repo=args.repo))
     directory = dashboard_root(root)
     handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(directory))
@@ -4875,9 +4787,7 @@ def supervisor_tick(root: Path, args: argparse.Namespace) -> dict[str, Any]:
 
 
 def command_supervisor_status(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     state = read_json(supervisor_state_path(root), {})
     counts = queue_counts(root)
     print("Supervisor:")
@@ -4888,19 +4798,13 @@ def command_supervisor_status(args: argparse.Namespace) -> None:
 
 
 def command_supervisor_tick(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    require_safe_branch(root, args, "supervisor tick")
+    root = prepared_repo(args, safe_operation="supervisor tick")
     payload = supervisor_tick(root, args)
     print(json.dumps(payload, indent=2, ensure_ascii=False) if args.json else payload["recommendation"])
 
 
 def command_supervisor_run(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    require_safe_branch(root, args, "supervisor run")
+    root = prepared_repo(args, safe_operation="supervisor run")
     ticks = 0
     while True:
         payload = supervisor_tick(root, args)
@@ -4935,10 +4839,7 @@ def render_github_pr_body(root: Path, task_id: str) -> str:
 
 
 def command_github_configure(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    require_safe_branch(root, args, "github configure")
+    root = prepared_repo(args, safe_operation="github configure")
     config = load_config(root)
     gconfig = github_config(config)
     if args.repo:
@@ -4953,9 +4854,7 @@ def command_github_configure(args: argparse.Namespace) -> None:
 
 
 def command_github_status(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     gconfig = github_config(load_config(root))
     print(f"repo: {gconfig.get('repo') or 'nao configurado'}")
     print(f"remote: {gconfig.get('remote')}")
@@ -4964,9 +4863,7 @@ def command_github_status(args: argparse.Namespace) -> None:
 
 
 def command_github_pr_body(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     body = render_github_pr_body(root, args.task_id)
     path = Path(args.out).expanduser().resolve() if args.out else github_root(root) / f"{args.task_id}-pr-body.md"
     assert_inside_root(root, path, label="github pr-body out")
@@ -4975,10 +4872,7 @@ def command_github_pr_body(args: argparse.Namespace) -> None:
 
 
 def command_github_pr_create(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    require_safe_branch(root, args, "github pr-create")
+    root = prepared_repo(args, safe_operation="github pr-create")
     config = load_config(root)
     gconfig = github_config(config)
     task = find_task(root, args.task_id)
@@ -5000,10 +4894,7 @@ def command_github_pr_create(args: argparse.Namespace) -> None:
 
 
 def command_github_issue_import(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    require_safe_branch(root, args, "github issue-import")
+    root = prepared_repo(args, safe_operation="github issue-import")
     if not shutil.which("gh"):
         raise SystemExit("gh CLI nao encontrado. Instale/configure `gh` ou crie a task manualmente.")
     result = subprocess.run(
@@ -5022,18 +4913,13 @@ def command_github_issue_import(args: argparse.Namespace) -> None:
 
 
 def command_policy_show(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     config = load_config(root)
     print(json.dumps({"failure_policy": failure_policy(config), "review_policy": review_policy(config)}, indent=2, ensure_ascii=False))
 
 
 def command_policy_set(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    require_safe_branch(root, args, "policy set")
+    root = prepared_repo(args, safe_operation="policy set")
     config = load_config(root)
     policy = failure_policy(config)
     if args.max_fix_attempts is not None:
@@ -5051,10 +4937,7 @@ def command_policy_set(args: argparse.Namespace) -> None:
 
 
 def command_failure_apply(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    require_safe_branch(root, args, "failure apply")
+    root = prepared_repo(args, safe_operation="failure apply")
     config = load_config(root)
     task = find_task(root, args.task_id)
     contract = load_contract(root, args.task_id)
@@ -5088,10 +4971,7 @@ def command_failure_apply(args: argparse.Namespace) -> None:
 
 
 def command_evaluate(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    require_safe_branch(root, args, "evaluate")
+    root = prepared_repo(args, safe_operation="evaluate")
     config = load_config(root)
     task = find_task(root, args.task_id)
     contract = load_contract(root, args.task_id)
@@ -5207,10 +5087,7 @@ def render_evaluation_markdown(evaluation: dict[str, Any]) -> str:
 
 
 def command_report(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    require_safe_branch(root, args, "report")
+    root = prepared_repo(args, safe_operation="report")
     task = find_task(root, args.task_id)
     contract = read_json(contract_file_path(root, args.task_id), {})
     run_dir = latest_run_dir(root, args.task_id)
@@ -5240,9 +5117,7 @@ def command_report(args: argparse.Namespace) -> None:
 
 
 def command_preflight(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     if args.task_id:
         find_task(root, args.task_id)
     result = check_context_preflight(root, args.task_id)
@@ -5255,10 +5130,7 @@ def command_preflight(args: argparse.Namespace) -> None:
 
 
 def command_telegram_configure(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    require_safe_branch(root, args, "telegram configure")
+    root = prepared_repo(args, safe_operation="telegram configure")
     config = load_config(root)
     tconfig = telegram_config(config)
     if args.enable:
@@ -5301,9 +5173,7 @@ def command_telegram_configure(args: argparse.Namespace) -> None:
 
 
 def command_telegram_send(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     config = load_config(root)
     text = args.text or ""
     if args.text_file:
@@ -5316,9 +5186,7 @@ def command_telegram_send(args: argparse.Namespace) -> None:
 
 
 def command_telegram_status(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     config = load_config(root)
     tconfig = telegram_config(config)
     print("Telegram:")
@@ -5335,10 +5203,7 @@ def command_telegram_status(args: argparse.Namespace) -> None:
 
 
 def command_telegram_listen(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    require_safe_branch(root, args, "telegram listen")
+    root = prepared_repo(args, safe_operation="telegram listen")
     config = load_config(root)
     token = require_telegram_bot_token(config)
     state = read_json(telegram_state_path(root), {})
@@ -5488,10 +5353,7 @@ def prepare_telegram_exec_update(
 
 
 def command_telegram_codex(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    require_safe_branch(root, args, "telegram codex")
+    root = prepared_repo(args, safe_operation="telegram codex")
     config = load_config(root)
     token = require_telegram_bot_token(config)
     if not telegram_remote_execution_allowed(config):
@@ -5565,9 +5427,7 @@ def command_telegram_codex(args: argparse.Namespace) -> None:
 
 
 def command_telegram_mirror(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     config = load_config(root)
     require_telegram_bot_token(config)
     session_path = Path(args.session_file).expanduser().resolve() if args.session_file else latest_codex_session_file()
@@ -5601,10 +5461,7 @@ def command_telegram_mirror(args: argparse.Namespace) -> None:
 
 
 def command_telegram_bridge(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
-    require_safe_branch(root, args, "telegram bridge")
+    root = prepared_repo(args, safe_operation="telegram bridge")
     config = load_config(root)
     token = require_telegram_bot_token(config)
     if args.send_mode == "codex-exec":
@@ -5807,9 +5664,7 @@ def render_report(
 
 
 def command_status(args: argparse.Namespace) -> None:
-    root = root_from_args(args)
-    require_existing_root(root)
-    require_init(root)
+    root = prepared_repo(args)
     config = load_config(root)
     print(f"Projeto: {config.get('project_name')}")
     print(f"Raiz: {root}")
@@ -5965,6 +5820,42 @@ def command_compat_skill_smoke(args: argparse.Namespace) -> None:
                     print(result["stdout"])
     if failed:
         raise SystemExit(1)
+
+
+def add_telegram_codex_exec_args(
+    parser: argparse.ArgumentParser,
+    *,
+    timeout_first: bool = False,
+    bridge: bool = False,
+) -> None:
+    def add_timeout() -> None:
+        parser.add_argument("--codex-timeout", type=int, default=1800, help="Timeout por chamada Codex em segundos")
+
+    if timeout_first:
+        add_timeout()
+    resume_help = "Usa `codex exec resume --last` para envios ao Codex" if bridge else "Usa `codex exec resume --last`"
+    session_help = (
+        "Usa `codex exec resume <session-id>` para envios ao Codex"
+        if bridge
+        else "Usa `codex exec resume <session-id>`"
+    )
+    model_help = "Modelo Codex para envios ao Codex" if bridge else "Modelo Codex"
+    parser.add_argument("--resume-last", action="store_true", help=resume_help)
+    parser.add_argument("--session-id", help=session_help)
+    parser.add_argument("--model", help=model_help)
+    parser.add_argument(
+        "--sandbox",
+        choices=["read-only", "workspace-write", "danger-full-access"],
+        help="Sandbox para sessoes novas",
+    )
+    parser.add_argument(
+        "--approval",
+        choices=["untrusted", "on-failure", "on-request", "never"],
+        help="Politica de aprovacao para sessoes novas",
+    )
+    parser.add_argument("--bypass", action="store_true", help="Passa --dangerously-bypass-approvals-and-sandbox ao Codex")
+    if not timeout_first:
+        add_timeout()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -6424,13 +6315,7 @@ def build_parser() -> argparse.ArgumentParser:
     telegram_codex.add_argument("--once", action="store_true", help="Busca uma vez e encerra")
     telegram_codex.add_argument("--poll-timeout", type=int, default=25, help="Tempo de long polling em segundos")
     telegram_codex.add_argument("--limit", type=int, default=10, help="Maximo de updates por chamada")
-    telegram_codex.add_argument("--codex-timeout", type=int, default=1800, help="Timeout por chamada Codex em segundos")
-    telegram_codex.add_argument("--resume-last", action="store_true", help="Usa `codex exec resume --last`")
-    telegram_codex.add_argument("--session-id", help="Usa `codex exec resume <session-id>`")
-    telegram_codex.add_argument("--model", help="Modelo Codex")
-    telegram_codex.add_argument("--sandbox", choices=["read-only", "workspace-write", "danger-full-access"], help="Sandbox para sessoes novas")
-    telegram_codex.add_argument("--approval", choices=["untrusted", "on-failure", "on-request", "never"], help="Politica de aprovacao para sessoes novas")
-    telegram_codex.add_argument("--bypass", action="store_true", help="Passa --dangerously-bypass-approvals-and-sandbox ao Codex")
+    add_telegram_codex_exec_args(telegram_codex, timeout_first=True)
     telegram_codex.add_argument("--no-download-media", action="store_true", help="Nao baixa midia nesta execucao")
     telegram_codex.add_argument("--no-reply", action="store_true", help="Nao responde no Telegram")
     telegram_codex.set_defaults(func=command_telegram_codex)
@@ -6456,13 +6341,7 @@ def build_parser() -> argparse.ArgumentParser:
     telegram_bridge.add_argument("--no-harness-events", action="store_true", help="Nao encaminha o stream .harness/events.jsonl")
     telegram_bridge.add_argument("--follow-latest", action="store_true", default=True, help="Segue a sessao Codex mais recente")
     telegram_bridge.add_argument("--send-mode", choices=["queue", "codex-exec"], default="queue", help="Como tratar mensagens comuns do Telegram")
-    telegram_bridge.add_argument("--resume-last", action="store_true", help="Usa `codex exec resume --last` para envios ao Codex")
-    telegram_bridge.add_argument("--session-id", help="Usa `codex exec resume <session-id>` para envios ao Codex")
-    telegram_bridge.add_argument("--model", help="Modelo Codex para envios ao Codex")
-    telegram_bridge.add_argument("--sandbox", choices=["read-only", "workspace-write", "danger-full-access"], help="Sandbox para sessoes novas")
-    telegram_bridge.add_argument("--approval", choices=["untrusted", "on-failure", "on-request", "never"], help="Politica de aprovacao para sessoes novas")
-    telegram_bridge.add_argument("--bypass", action="store_true", help="Passa --dangerously-bypass-approvals-and-sandbox ao Codex")
-    telegram_bridge.add_argument("--codex-timeout", type=int, default=1800, help="Timeout por chamada Codex em segundos")
+    add_telegram_codex_exec_args(telegram_bridge, bridge=True)
     telegram_bridge.add_argument("--no-download-media", action="store_true", help="Nao baixa midia nesta execucao")
     telegram_bridge.add_argument("--no-reply", action="store_true", help="Nao responde no Telegram")
     telegram_bridge.set_defaults(func=command_telegram_bridge)
