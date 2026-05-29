@@ -101,7 +101,7 @@ For development tests:
 ```powershell
 python -m pip install -r requirements-dev.txt
 python -m ruff check bin/harness.py harness_core tests
-python -m pytest tests/ --cov=harness --cov-report=term-missing
+python -m pytest tests/ --cov=harness --cov=harness_core --cov-report=term-missing
 ```
 
 ## Quick Start
@@ -609,6 +609,25 @@ parallel through `codex exec resume --last`. This requires
 
 Read the full guide in [docs/TELEGRAM.md](docs/TELEGRAM.md).
 
+## Skill Compatibility
+
+`bin/harness.py` is the stable entrypoint used by the Harness Runner skill. The
+refactor is allowed to move implementation code, but not to remove that public
+surface.
+
+Check the protected command surface:
+
+```powershell
+python $HARNESS compat manifest
+```
+
+Run a local safety smoke that creates a fake repo and exercises the main skill
+flow through `bin/harness.py`:
+
+```powershell
+python $HARNESS compat skill-smoke
+```
+
 ## Repository Layout
 
 ```text
@@ -677,7 +696,7 @@ Run tests:
 
 ```powershell
 python -m pip install -r requirements-dev.txt
-python -m pytest tests/ --cov=harness --cov-report=term-missing
+python -m pytest tests/ --cov=harness --cov=harness_core --cov-report=term-missing
 ```
 
 Compile-check the CLI:

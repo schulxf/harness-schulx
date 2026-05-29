@@ -29,6 +29,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -38,8 +39,41 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from harness_core.records import QueueRecord, TaskRecord
-from harness_core.status import (
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from harness_core.compat import compatibility_manifest  # noqa: E402
+from harness_core.paths import (  # noqa: E402
+    agent_registry_path,
+    artifacts_index_path,
+    artifacts_root,
+    checkpoints_root,
+    config_path,
+    context_manifest_path,
+    contract_file_path,
+    dashboard_hub_root,
+    dashboard_root,
+    evaluation_markdown_path,
+    event_stream_path,
+    github_root,
+    harness_root,
+    hub_repo_registry_path,
+    memory_index_path,
+    plugin_registry_path,
+    preflight_cache_path,
+    queue_path,
+    security_root,
+    supervisor_state_path,
+    tasks_index_path,
+    telegram_codex_root,
+    telegram_inbox_root,
+    telegram_media_root,
+    telegram_root,
+    telegram_state_path,
+)
+from harness_core.records import QueueRecord, TaskRecord  # noqa: E402
+from harness_core.status import (  # noqa: E402
     QUEUE_STATUS_ACTIVE,
     QUEUE_STATUS_DONE,
     QUEUE_STATUS_QUEUED,
@@ -50,9 +84,17 @@ from harness_core.status import (
     TASK_STATUSES_READY_TO_START,
     TASK_STATUSES_WORKING,
 )
+from harness_core.storage import (  # noqa: E402
+    append_jsonl,
+    read_json,
+    read_jsonl,
+    read_jsonl_tail,
+    read_text,
+    write_json,
+    write_text,
+)
 
 VERSION = "0.3.0"
-HARNESS_DIR = ".harness"
 DEFAULT_PROTECTED_BRANCHES = ["main", "master", "production"]
 DEFAULT_OPERATION_PROFILES = {
     "fast": {
@@ -210,31 +252,12 @@ def slugify(value: str) -> str:
     return slug[:80] or "untitled"
 
 
-def read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8-sig")
-
-
 def file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def write_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8", newline="\n")
-
-
-def read_json(path: Path, default: Any = None) -> Any:
-    if not path.exists():
-        return default
-    return json.loads(read_text(path))
-
-
-def write_json(path: Path, data: Any) -> None:
-    write_text(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 
 
 def root_from_args(args: argparse.Namespace) -> Path:
@@ -251,19 +274,11 @@ def require_existing_root(root: Path) -> None:
         raise SystemExit(f"O caminho do repo nao e um diretorio: {root}")
 
 
-def harness_root(root: Path) -> Path:
-    return root / HARNESS_DIR
-
-
 def require_init(root: Path) -> None:
     if not (harness_root(root) / "config.json").exists():
         raise SystemExit(
             f"Harness nao inicializado em {root}. Rode: harness --repo {root} init"
         )
-
-
-def config_path(root: Path) -> Path:
-    return harness_root(root) / "config.json"
 
 
 def load_config(root: Path) -> dict[str, Any]:
@@ -363,71 +378,6 @@ def deep_merge(defaults: dict[str, Any], overrides: dict[str, Any] | None) -> di
 def telegram_config(config: dict[str, Any]) -> dict[str, Any]:
     configured = config.get("telegram", {})
     return deep_merge(DEFAULT_TELEGRAM_CONFIG, configured if isinstance(configured, dict) else {})
-
-
-def tasks_index_path(root: Path) -> Path:
-    return harness_root(root) / "tasks" / "index.json"
-
-
-def queue_path(root: Path) -> Path:
-    return harness_root(root) / "queue" / "index.json"
-
-
-def supervisor_state_path(root: Path) -> Path:
-    return harness_root(root) / "supervisor" / "state.json"
-
-
-def checkpoints_root(root: Path, task_id: str | None = None) -> Path:
-    base = harness_root(root) / "checkpoints"
-    return base / task_id if task_id else base
-
-
-def artifacts_root(root: Path) -> Path:
-    return harness_root(root) / "artifacts"
-
-
-def artifacts_index_path(root: Path) -> Path:
-    return artifacts_root(root) / "index.json"
-
-
-def dashboard_root(root: Path) -> Path:
-    return harness_root(root) / "dashboard"
-
-
-def dashboard_hub_root(root: Path) -> Path:
-    return dashboard_root(root) / "hub"
-
-
-def hub_repo_registry_path(root: Path) -> Path:
-    return dashboard_hub_root(root) / "repos.json"
-
-
-def event_stream_path(root: Path) -> Path:
-    return harness_root(root) / "events.jsonl"
-
-
-def agents_root(root: Path) -> Path:
-    return harness_root(root) / "agents"
-
-
-def agent_registry_path(root: Path) -> Path:
-    return agents_root(root) / "registry.json"
-
-
-def memory_index_path(root: Path) -> Path:
-    return harness_root(root) / "memory" / "index.json"
-
-
-def plugin_registry_path(root: Path) -> Path:
-    return harness_root(root) / "plugins" / "registry.json"
-
-
-def security_root(root: Path) -> Path:
-    return harness_root(root) / "security"
-
-
-def github_root(root: Path) -> Path:
-    return harness_root(root) / "github"
 
 
 def load_tasks(root: Path) -> list[TaskRecord]:
@@ -535,30 +485,6 @@ def task_budget(task: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
     if isinstance(task.get("budget"), dict):
         budget.update(task["budget"])
     return budget
-
-
-def context_manifest_path(root: Path) -> Path:
-    return harness_root(root) / "context" / "manifest.json"
-
-
-def telegram_root(root: Path) -> Path:
-    return harness_root(root) / "telegram"
-
-
-def telegram_state_path(root: Path) -> Path:
-    return telegram_root(root) / "state.json"
-
-
-def telegram_inbox_root(root: Path) -> Path:
-    return harness_root(root) / "inbox" / "telegram"
-
-
-def telegram_media_root(root: Path) -> Path:
-    return telegram_inbox_root(root) / "media"
-
-
-def telegram_codex_root(root: Path) -> Path:
-    return telegram_root(root) / "codex"
 
 
 def resolve_repo_path(root: Path, value: str) -> Path:
@@ -718,11 +644,6 @@ def latest_manifest_items_by_source(root: Path) -> dict[str, dict[str, Any]]:
         source_path = resolve_repo_path(root, source)
         latest[normalize_path_key(source_path)] = item
     return latest
-
-
-def preflight_cache_path(root: Path, task_id: str | None = None) -> Path:
-    name = task_id or "global"
-    return harness_root(root) / "context" / "preflight-cache" / f"{name}.json"
 
 
 def context_preflight_fingerprint(
@@ -915,58 +836,6 @@ def append_event(run_dir: Path, event_type: str, payload: dict[str, Any]) -> Non
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8", newline="\n") as handle:
         handle.write(json.dumps(event, ensure_ascii=False) + "\n")
-
-
-def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
-
-
-def read_jsonl(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    items: list[dict[str, Any]] = []
-    for line in read_text(path).splitlines():
-        if not line.strip():
-            continue
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict):
-            items.append(payload)
-    return items
-
-
-def read_jsonl_tail(path: Path, limit: int) -> list[dict[str, Any]]:
-    if limit <= 0 or not path.exists():
-        return []
-    block_size = 8192
-    chunks: list[bytes] = []
-    newline_count = 0
-    with path.open("rb") as handle:
-        handle.seek(0, os.SEEK_END)
-        position = handle.tell()
-        while position > 0 and newline_count <= limit:
-            read_size = min(block_size, position)
-            position -= read_size
-            handle.seek(position)
-            chunk = handle.read(read_size)
-            chunks.append(chunk)
-            newline_count += chunk.count(b"\n")
-    raw = b"".join(reversed(chunks)).decode("utf-8", errors="replace")
-    items: list[dict[str, Any]] = []
-    for line in raw.splitlines()[-limit:]:
-        if not line.strip():
-            continue
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict):
-            items.append(payload)
-    return items
 
 
 def append_harness_event(
@@ -1762,10 +1631,6 @@ def find_unevaluated_runs(root: Path, task_id: str | None = None) -> list[dict[s
     return unevaluated
 
 
-def evaluation_markdown_path(root: Path, task_id: str) -> Path:
-    return harness_root(root) / "evaluations" / f"{task_id}.md"
-
-
 def run_evaluation_status(root: Path, task_id: str, run_dir: Path) -> str | None:
     evaluation_path = run_dir / "evaluation.json"
     if evaluation_path.exists():
@@ -1820,10 +1685,6 @@ def maybe_warn_unevaluated_runs(root: Path, config: dict[str, Any], task_id: str
 def task_file_path(root: Path, task_id: str) -> Path:
     task = find_task(root, task_id)
     return root / task["task_file"]
-
-
-def contract_file_path(root: Path, task_id: str) -> Path:
-    return harness_root(root) / "contracts" / f"{task_id}.json"
 
 
 def load_contract(root: Path, task_id: str) -> dict[str, Any]:
@@ -7126,6 +6987,105 @@ def command_status(args: argparse.Namespace) -> None:
     maybe_warn_unevaluated_runs(root, config)
 
 
+def run_compat_command(repo: Path, args: list[str]) -> dict[str, Any]:
+    command = [sys.executable, str(Path(__file__).resolve()), "--repo", str(repo), *args]
+    started = time.monotonic()
+    result = subprocess.run(
+        command,
+        cwd=repo.parent if repo.parent.exists() else None,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120,
+    )
+    return {
+        "command": " ".join(args),
+        "exit_code": result.returncode,
+        "duration_ms": int((time.monotonic() - started) * 1000),
+        "stdout": result.stdout[-1200:],
+        "stderr": result.stderr[-1200:],
+    }
+
+
+def command_compat_manifest(args: argparse.Namespace) -> None:
+    manifest = compatibility_manifest()
+    if args.json:
+        print(json.dumps(manifest, indent=2, ensure_ascii=False))
+        return
+    print(f"Compatibilidade: {manifest['compat_version']}")
+    print("Entrypoints publicos:")
+    for entrypoint in manifest["entrypoints"]:
+        print(f"- {entrypoint}")
+    print("Comandos protegidos:")
+    for command in manifest["required_commands"]:
+        print(f"- {command}")
+
+
+def command_compat_skill_smoke(args: argparse.Namespace) -> None:
+    base = Path(args.workdir).expanduser().resolve() if args.workdir else Path(tempfile.mkdtemp(prefix="harness-compat-"))
+    repo = base / "skill-compat-repo"
+    repo.mkdir(parents=True, exist_ok=True)
+    (repo / "AGENTS.md").write_text("# Agents\n\nContexto de compatibilidade.\n", encoding="utf-8")
+    (repo / "issue.md").write_text(
+        "# Compat task\n\n## Criterios de aceite\n\n- [ ] fluxo da skill funciona\n",
+        encoding="utf-8",
+    )
+
+    commands = [
+        ["init", "--name", "skill-compat", "--force"],
+        ["ingest", str(repo / "AGENTS.md"), "--kind", "context"],
+        ["preflight"],
+        ["task", "import", str(repo / "issue.md")],
+        ["queue", "add", "TASK-001"],
+        ["queue", "next"],
+        ["contract", "TASK-001", "--criteria", "fluxo da skill funciona", "--sensor", "python -c pass", "--reviewed-sensors"],
+        ["start", "TASK-001"],
+        ["sensors", "TASK-001", "--reviewed"],
+        ["evaluate", "TASK-001"],
+        ["evaluate", "TASK-001", "--status", "pass", "--notes", "compat smoke ok"],
+        ["report", "TASK-001"],
+        ["checkpoint", "create", "TASK-001", "--summary", "compat smoke checkpoint"],
+        ["checkpoint", "resume-plan", "TASK-001"],
+        ["dashboard", "hub"],
+        ["events", "list", "--json"],
+        ["agent", "list", "--json"],
+        ["telegram", "configure", "--chat-id", "123", "--allowed-chat-id", "123"],
+        ["telegram", "status"],
+        ["status"],
+    ]
+    results = []
+    failed = False
+    for command in commands:
+        result = run_compat_command(repo, command)
+        results.append(result)
+        if result["exit_code"] != 0:
+            failed = True
+            break
+
+    payload = {
+        "ok": not failed,
+        "compat": compatibility_manifest(),
+        "repo": str(repo),
+        "results": results,
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    else:
+        print(f"Skill smoke: {'ok' if payload['ok'] else 'falhou'}")
+        print(f"Repo temporario: {repo}")
+        for result in results:
+            status = "ok" if result["exit_code"] == 0 else f"erro {result['exit_code']}"
+            print(f"- {result['command']}: {status}")
+            if result["exit_code"] != 0:
+                if result["stderr"]:
+                    print(result["stderr"])
+                if result["stdout"]:
+                    print(result["stdout"])
+    if failed:
+        raise SystemExit(1)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="harness", description="Harness Runner MVP")
     parser.add_argument("--repo", default=".", help="Diretorio alvo do repo/app")
@@ -7507,6 +7467,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     status = sub.add_parser("status", help="Mostra estado do Harness")
     status.set_defaults(func=command_status)
+
+    compat = sub.add_parser("compat", help="Contrato de compatibilidade da skill")
+    compat_sub = compat.add_subparsers(dest="compat_command", required=True)
+    compat_manifest = compat_sub.add_parser("manifest", help="Mostra comandos publicos protegidos")
+    compat_manifest.add_argument("--json", action="store_true")
+    compat_manifest.set_defaults(func=command_compat_manifest)
+    compat_smoke = compat_sub.add_parser("skill-smoke", help="Roda smoke test local do fluxo usado pela skill")
+    compat_smoke.add_argument("--workdir", help="Diretorio onde criar repo falso; padrao usa temp")
+    compat_smoke.add_argument("--json", action="store_true")
+    compat_smoke.set_defaults(func=command_compat_skill_smoke)
 
     plugin = sub.add_parser("plugin", help="Registry local de plugins")
     plugin_sub = plugin.add_subparsers(dest="plugin_command", required=True)
