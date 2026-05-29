@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from harness_core.defaults import SECRET_PATTERNS, SECURITY_EXCLUDED_DIRS
-from harness_core.paths import relative_to_root
+from harness_core.git_helpers import git_output, is_git_repo
+from harness_core.paths import relative_to_root, telegram_inbox_root
 from harness_core.storage import read_text
 
 
@@ -44,3 +45,24 @@ def scan_file_for_secrets(root: Path, path: Path, *, allow_harness: bool = False
                 }
             )
     return findings
+
+
+def iter_security_scan_files(root: Path, tracked_only: bool = True) -> list[Path]:
+    if tracked_only and is_git_repo(root):
+        output = git_output(root, ["ls-files"])
+        return [root / line.strip() for line in output.splitlines() if line.strip()]
+    files = []
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        if any(part in SECURITY_EXCLUDED_DIRS for part in path.relative_to(root).parts):
+            continue
+        files.append(path)
+    return files
+
+
+def iter_security_inbox_files(root: Path) -> list[Path]:
+    inbox = telegram_inbox_root(root)
+    if not inbox.exists():
+        return []
+    return sorted(path for path in inbox.glob("*.json") if path.is_file())

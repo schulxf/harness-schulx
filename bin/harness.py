@@ -104,7 +104,6 @@ from harness_core.defaults import (  # noqa: E402
     DEFAULT_PROTECTED_BRANCHES,
     DEFAULT_REVIEW_POLICY,
     DEFAULT_TELEGRAM_CONFIG,
-    SECURITY_EXCLUDED_DIRS,
 )
 from harness_core.errors import HarnessError  # noqa: E402
 from harness_core.events import (  # noqa: E402
@@ -159,7 +158,6 @@ from harness_core.paths import (  # noqa: E402
     security_root,
     supervisor_state_path,
     tasks_index_path,
-    telegram_inbox_root,
     telegram_root,
     telegram_state_path,
     to_posix,
@@ -196,10 +194,9 @@ from harness_core.run_state import (  # noqa: E402
     run_evaluation_status,
 )
 from harness_core.security_scan import (  # noqa: E402
-    is_probably_text as is_probably_text,
-)
-from harness_core.security_scan import (  # noqa: E402
-    scan_file_for_secrets as scan_file_for_secrets,
+    iter_security_inbox_files,
+    iter_security_scan_files,
+    scan_file_for_secrets,
 )
 from harness_core.sensors import (  # noqa: E402
     detect_default_sensors,
@@ -2113,27 +2110,6 @@ def command_plugin_run(args: argparse.Namespace) -> None:
             }
         )
     append_jsonl(harness_root(root) / "plugins" / "runs.jsonl", {"ts": utc_now(), "event": args.event, "results": results})
-
-
-def iter_security_scan_files(root: Path, tracked_only: bool = True) -> list[Path]:
-    if tracked_only and is_git_repo(root):
-        output = git_output(root, ["ls-files"])
-        return [root / line.strip() for line in output.splitlines() if line.strip()]
-    files = []
-    for path in root.rglob("*"):
-        if not path.is_file():
-            continue
-        if any(part in SECURITY_EXCLUDED_DIRS for part in path.relative_to(root).parts):
-            continue
-        files.append(path)
-    return files
-
-
-def iter_security_inbox_files(root: Path) -> list[Path]:
-    inbox = telegram_inbox_root(root)
-    if not inbox.exists():
-        return []
-    return sorted(path for path in inbox.glob("*.json") if path.is_file())
 
 
 def command_security_scan(args: argparse.Namespace) -> None:

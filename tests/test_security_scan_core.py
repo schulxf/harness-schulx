@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from harness_core.security_scan import is_probably_text, scan_file_for_secrets
+from harness_core.security_scan import (
+    is_probably_text,
+    iter_security_inbox_files,
+    iter_security_scan_files,
+    scan_file_for_secrets,
+)
 
 OPENAI_KEY_SAMPLE = "sk-proj-" + "abcdefghijklmnopqrstuvwxyz123456"
 
@@ -69,3 +74,25 @@ def test_finding_format_and_redaction_are_stable(tmp_path: Path) -> None:
             "match": "TOKEN=ab...3456",
         }
     ]
+
+
+def test_iter_security_scan_files_skips_harness_directory(tmp_path: Path) -> None:
+    app_file = tmp_path / "app.py"
+    app_file.write_text("print('ok')", encoding="utf-8")
+    harness_file = tmp_path / ".harness" / "state.json"
+    harness_file.parent.mkdir()
+    harness_file.write_text("{}", encoding="utf-8")
+
+    assert iter_security_scan_files(tmp_path, tracked_only=False) == [app_file]
+
+
+def test_iter_security_inbox_files_returns_telegram_json_files(tmp_path: Path) -> None:
+    inbox = tmp_path / ".harness" / "inbox" / "telegram"
+    inbox.mkdir(parents=True)
+    first = inbox / "a.json"
+    second = inbox / "b.json"
+    first.write_text("{}", encoding="utf-8")
+    second.write_text("{}", encoding="utf-8")
+    (inbox / "note.txt").write_text("ignored", encoding="utf-8")
+
+    assert iter_security_inbox_files(tmp_path) == [first, second]
