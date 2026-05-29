@@ -65,6 +65,10 @@ def agent_registry_path(root: Path) -> Path:
     return agents_root(root) / "registry.json"
 
 
+def agent_messages_path(root: Path) -> Path:
+    return agents_root(root) / "messages.jsonl"
+
+
 def memory_index_path(root: Path) -> Path:
     return harness_root(root) / "memory" / "index.json"
 

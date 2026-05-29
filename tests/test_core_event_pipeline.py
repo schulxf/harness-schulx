@@ -2,8 +2,8 @@ from pathlib import Path
 
 from harness_core.agent_registry import load_agent_registry
 from harness_core.event_pipeline import sync_agent_from_event, telegram_event_message
-from harness_core.paths import config_path
-from harness_core.storage import write_json
+from harness_core.paths import config_path, event_stream_path
+from harness_core.storage import read_jsonl, write_json
 from harness_core.task_store import save_tasks
 
 
@@ -50,4 +50,11 @@ def test_sync_agent_from_event_updates_hub_agent_registry(tmp_path: Path) -> Non
     assert agent["task_title"] == "Implementar evento"
     assert agent["state"] == "working"
     assert agent["phase"] == "build"
+    assert agent["sector"] == "implement"
+    assert agent["spawned_by"] == "event"
     assert agent["speech"] == "Comecei TASK-001."
+
+    events = read_jsonl(event_stream_path(tmp_path))
+    assert events[-1]["type"] == "agent_sector_changed"
+    assert events[-1]["payload"]["agent_id"] == "builder-task-001"
+    assert events[-1]["payload"]["sector"] == "implement"

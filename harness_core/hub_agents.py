@@ -14,6 +14,52 @@ from harness_core.status import (
     TASK_STATUSES_WORKING,
 )
 
+ROLE_SECTORS = {
+    "planner": "plan",
+    "architect": "plan",
+    "builder": "implement",
+    "developer": "implement",
+    "implementer": "implement",
+    "coder": "implement",
+    "reviewer": "review",
+    "evaluator": "review",
+    "research": "research",
+    "researcher": "research",
+    "security": "security",
+    "auditor": "security",
+    "sentinel": "security",
+    "reporter": "report",
+    "archivist": "report",
+}
+
+
+def sector_for_role(role: str) -> str:
+    return ROLE_SECTORS.get(str(role or "").strip().lower(), "idle")
+
+
+def sector_for_event(event_type: str, payload: dict[str, Any] | None = None) -> str:
+    payload = payload or {}
+    event_type = str(event_type or "").strip().lower()
+    if event_type == "agent_sector_changed":
+        return str(payload.get("sector") or "idle")
+    if event_type == "agent_spawned":
+        return sector_for_role(str(payload.get("role") or ""))
+    if event_type.startswith("security_") or event_type in {"security_scan", "security_finding"}:
+        return "security"
+    if event_type in {"task_created", "queue_item_added", "queue_item_activated"}:
+        return "plan"
+    if event_type.startswith("contract_"):
+        return "plan"
+    if event_type in {"run_started", "fix_brief_created"} or event_type.startswith("sensors_"):
+        return "implement"
+    if event_type == "evaluation_brief_created":
+        return "review"
+    if event_type == "evaluation_recorded":
+        return "report" if payload.get("status") == "pass" else "implement"
+    if event_type == "report_created":
+        return "report"
+    return "idle"
+
 
 def hub_repo_phase(tasks: list[dict[str, Any]], queue: list[dict[str, Any]], security: dict[str, Any]) -> str:
     if security.get("findings"):

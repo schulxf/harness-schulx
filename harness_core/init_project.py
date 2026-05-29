@@ -9,6 +9,7 @@ from .defaults import (
     DEFAULT_EVALUATION_POLICY,
     DEFAULT_FAILURE_POLICY,
     DEFAULT_GITHUB_CONFIG,
+    DEFAULT_HUB_CONFIG,
     DEFAULT_OPERATION_PROFILES,
     DEFAULT_PROTECTED_BRANCHES,
     DEFAULT_REVIEW_POLICY,
@@ -69,6 +70,7 @@ def default_config(root: Path, *, project_name: str, sensors: list[str], runner_
         "budgets": {},
         "github": DEFAULT_GITHUB_CONFIG,
         "telegram": DEFAULT_TELEGRAM_CONFIG,
+        "hub": DEFAULT_HUB_CONFIG,
         "protected_branches": DEFAULT_PROTECTED_BRANCHES,
         "sensor_execution_requires_review": True,
         "policy": {

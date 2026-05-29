@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Harness Hub Pixel Client</title>
+    <link rel="stylesheet" href="./src/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <div>
+            <h1>Harness Hub</h1>
+            <p>Live workspace</p>
+          </div>
+        </div>
+        <div class="hud" aria-label="Hub status">
+          <span id="connectionBadge" class="badge" data-state="connecting">Connecting</span>
+          <span id="repoCount" class="badge">Repos 0</span>
+          <span id="agentCount" class="badge">Agents 0</span>
+          <span id="eventCount" class="badge">Events 0</span>
+          <button id="viewToggle" class="control-button" type="button">World</button>
+          <button id="refreshButton" class="control-button" type="button">Refresh</button>
+          <button id="openTerminalButton" class="control-button" type="button" disabled>Shell</button>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="stage-panel" aria-label="Pixel hub">
+          <div class="stage-toolbar">
+            <div id="repoStrip" class="repo-strip" aria-label="Repositories"></div>
+            <div class="stage-hint" id="stageHint">Loading hub world...</div>
+          </div>
+          <div id="gameViewport" class="game-viewport" tabindex="0" aria-label="Harness hub world">
+            <canvas id="gameCanvas" width="1280" height="720"></canvas>
+            <div id="agentLayer" class="agent-layer" aria-live="polite"></div>
+          </div>
+        </section>
+
+        <aside class="inspector" aria-label="Agent details">
+          <div class="panel inspector-head">
+            <span class="section-kicker">Selected</span>
+            <h2 id="inspectorTitle">Hub</h2>
+            <p id="inspectorMeta">Waiting for hub state.</p>
+          </div>
+          <div id="inspectorBody" class="panel inspector-body"></div>
+        </aside>
+      </main>
+    </div>
+
+    <div id="terminalOverlay" class="terminal-overlay" hidden>
+      <div class="terminal-window" role="dialog" aria-modal="true" aria-labelledby="terminalTitle">
+        <div class="terminal-titlebar">
+          <div>
+            <span class="section-kicker">Terminal</span>
+            <h2 id="terminalTitle">Agent terminal</h2>
+          </div>
+          <div class="terminal-actions">
+            <span id="terminalStatus" class="terminal-status">Disconnected</span>
+            <button id="terminalReconnect" class="control-button" type="button">Connect</button>
+            <button id="terminalClose" class="control-button" type="button">Close</button>
+          </div>
+        </div>
+        <div id="terminalMount" class="terminal-mount" aria-live="polite"></div>
+        <form id="terminalInputForm" class="terminal-input-row">
+          <label class="sr-only" for="terminalInput">Terminal input</label>
+          <input id="terminalInput" autocomplete="off" spellcheck="false" placeholder="Type terminal input">
+          <button class="control-button" type="submit">Send</button>
+        </form>
+      </div>
+    </div>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

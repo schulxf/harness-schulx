@@ -6,6 +6,8 @@ from harness_core.hub_agents import (
     hub_agent_speech,
     hub_agent_state_for_phase,
     hub_repo_phase,
+    sector_for_event,
+    sector_for_role,
 )
 
 
@@ -48,3 +50,19 @@ def test_hub_agent_speech_mentions_current_work_or_queue() -> None:
     assert hub_agent_speech("idle", None, [{"status": "queued"}], {}) == (
         "Livre. 1 item(ns) na fila."
     )
+
+
+def test_sector_helpers_route_roles_and_events() -> None:
+    assert sector_for_role("builder") == "implement"
+    assert sector_for_role("reviewer") == "review"
+    assert sector_for_role("security") == "security"
+    assert sector_for_role("unknown") == "idle"
+
+    assert sector_for_event("run_started", {}) == "implement"
+    assert sector_for_event("sensors_completed", {"passed": True}) == "implement"
+    assert sector_for_event("evaluation_brief_created", {}) == "review"
+    assert sector_for_event("evaluation_recorded", {"status": "pass"}) == "report"
+    assert sector_for_event("evaluation_recorded", {"status": "fail"}) == "implement"
+    assert sector_for_event("security_scan", {}) == "security"
+    assert sector_for_event("agent_spawned", {"role": "planner"}) == "plan"
+    assert sector_for_event("agent_sector_changed", {"sector": "research"}) == "research"

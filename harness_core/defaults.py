@@ -157,3 +157,16 @@ DEFAULT_TELEGRAM_CONFIG = {
     },
 }
 
+DEFAULT_HUB_CONFIG = {
+    "allow_remote_execution": False,
+    "max_agents": 8,
+    "default_cli": "codex",
+    "clis": {
+        "codex": {"cmd": ["codex"], "args": []},
+        "claude": {"cmd": ["claude"], "args": []},
+    },
+    "pty": {
+        "idle_timeout_s": 1800,
+        "scrollback_bytes": 262144,
+    },
+}

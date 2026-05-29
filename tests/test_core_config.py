@@ -14,6 +14,7 @@ from harness_core.compat import (
 )
 from harness_core.defaults import (
     DEFAULT_GITHUB_CONFIG,
+    DEFAULT_HUB_CONFIG,
     DEFAULT_OPERATION_PROFILES,
     DEFAULT_PROTECTED_BRANCHES,
     DEFAULT_REVIEW_POLICY,
@@ -114,6 +115,30 @@ def test_github_and_telegram_config_merge_nested_defaults() -> None:
 
     telegram["chat_ids"].append("123")
     assert DEFAULT_TELEGRAM_CONFIG["chat_ids"] == []
+
+
+def test_hub_config_merges_nested_defaults_and_copies_mutable_values() -> None:
+    hub = config.hub_config(
+        {
+            "hub": {
+                "allow_remote_execution": True,
+                "clis": {"codex": {"args": ["--model", "gpt-5"]}},
+                "pty": {"idle_timeout_s": 60},
+            }
+        }
+    )
+
+    assert hub["allow_remote_execution"] is True
+    assert hub["max_agents"] == DEFAULT_HUB_CONFIG["max_agents"]
+    assert hub["default_cli"] == "codex"
+    assert hub["clis"]["codex"]["cmd"] == ["codex"]
+    assert hub["clis"]["codex"]["args"] == ["--model", "gpt-5"]
+    assert hub["clis"]["claude"] == DEFAULT_HUB_CONFIG["clis"]["claude"]
+    assert hub["pty"]["idle_timeout_s"] == 60
+    assert hub["pty"]["scrollback_bytes"] == DEFAULT_HUB_CONFIG["pty"]["scrollback_bytes"]
+
+    hub["clis"]["codex"]["cmd"].append("mutated")
+    assert DEFAULT_HUB_CONFIG["clis"]["codex"]["cmd"] == ["codex"]
 
 
 def test_operation_profiles_merge_overrides_and_custom_profiles() -> None:

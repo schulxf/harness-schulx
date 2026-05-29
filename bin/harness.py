@@ -74,6 +74,7 @@ from harness_core.config import (  # noqa: E402
     evaluation_policy,
     failure_policy,
     github_config,
+    hub_config,
     operation_profiles,
     review_policy,
     telegram_config,
@@ -153,6 +154,7 @@ from harness_core.memory import (  # noqa: E402
     save_memory,
 )
 from harness_core.paths import (  # noqa: E402
+    agent_messages_path,
     artifacts_root,
     assert_inside_root,
     checkpoints_root,
@@ -1246,8 +1248,40 @@ def command_dashboard_hub_state(args: argparse.Namespace) -> None:
     print(json.dumps(state, indent=2, ensure_ascii=False) if args.json else f"Hub state: {path}")
 
 
+def command_dashboard_hub_configure(args: argparse.Namespace) -> None:
+    root = prepared_repo(args, safe_operation="dashboard hub-configure")
+    config = load_config(root)
+    hconfig = hub_config(config)
+    if args.allow_remote_execution:
+        hconfig["allow_remote_execution"] = True
+    if args.block_remote_execution:
+        hconfig["allow_remote_execution"] = False
+    if args.max_agents is not None:
+        if args.max_agents < 1:
+            raise SystemExit("--max-agents deve ser maior que zero.")
+        hconfig["max_agents"] = args.max_agents
+    if args.default_cli:
+        hconfig["default_cli"] = args.default_cli
+    config["hub"] = hconfig
+    write_json(config_path(root), config)
+    print("Hub configurado.")
+    print(f"- execucao remota: {str(config_bool(hconfig.get('allow_remote_execution'), False)).lower()}")
+    print(f"- max agents: {hconfig.get('max_agents')}")
+    print(f"- CLI padrao: {hconfig.get('default_cli')}")
+
+
 def command_agent_register(args: argparse.Namespace) -> None:
     root = prepared_repo(args)
+    cwd = ""
+    if args.cwd:
+        cwd_path = resolve_repo_path(root, args.cwd)
+        assert_inside_root(root, cwd_path, "agent cwd")
+        cwd = str(cwd_path)
+    transcript_path = ""
+    if args.transcript_path:
+        transcript = resolve_repo_path(root, args.transcript_path)
+        assert_inside_root(root, transcript, "agent transcript")
+        transcript_path = to_posix(relative_to_root(root, transcript))
     task_title = ""
     if args.task_id:
         try:
@@ -1266,11 +1300,27 @@ def command_agent_register(args: argparse.Namespace) -> None:
         speech=args.speech or "",
         run_dir=args.run_dir or "",
         surface_id=args.surface_id or "",
+        cli=args.cli or "",
+        sector=args.sector or "",
+        pty_id=args.pty_id or "",
+        repo_root=str(root.resolve(strict=False)),
+        cwd=cwd,
+        transcript_path=transcript_path,
+        spawned_by=args.spawned_by or "",
     )
+    event_type = "agent_spawned" if agent.get("pty_id") else "agent_registered"
     append_harness_event(
         root,
-        "agent_registered",
-        {"agent_id": args.agent_id, "task_id": args.task_id or "", "summary": agent.get("speech") or "Agent registrado."},
+        event_type,
+        {
+            "agent_id": args.agent_id,
+            "task_id": args.task_id or "",
+            "role": agent.get("role") or "",
+            "cli": agent.get("cli") or "",
+            "sector": agent.get("sector") or "",
+            "pty_id": agent.get("pty_id") or "",
+            "summary": agent.get("speech") or "Agent registrado.",
+        },
         task_id=args.task_id,
         agent_id=args.agent_id,
         source="agent",
@@ -1294,11 +1344,20 @@ def command_agent_heartbeat(args: argparse.Namespace) -> None:
         agent["speech"] = args.speech
     if args.surface_id:
         agent["surface_id"] = args.surface_id
+    if args.sector:
+        agent["sector"] = args.sector
+    if args.pty_id:
+        agent["pty_id"] = args.pty_id
     save_agent_registry(root, {"agents": agents, "updated_at": utc_now()})
     append_harness_event(
         root,
         "agent_heartbeat",
-        {"agent_id": args.agent_id, "summary": args.speech or "Heartbeat recebido."},
+        {
+            "agent_id": args.agent_id,
+            "sector": agent.get("sector") or "",
+            "pty_id": agent.get("pty_id") or "",
+            "summary": args.speech or "Heartbeat recebido.",
+        },
         task_id=str(agent.get("task_id") or ""),
         agent_id=args.agent_id,
         source="agent",
@@ -1328,6 +1387,70 @@ def command_agent_done(args: argparse.Namespace) -> None:
         source="agent",
     )
     print(f"Agent {args.agent_id} -> {args.state}")
+
+
+def command_agent_message(args: argparse.Namespace) -> None:
+    root = prepared_repo(args)
+    registry = load_agent_registry(root)
+    agents = [agent for agent in registry.get("agents", []) if isinstance(agent, dict)]
+    sender = next((item for item in agents if item.get("id") == args.agent_id), None)
+    target = next((item for item in agents if item.get("id") == args.to), None)
+    if not sender:
+        raise SystemExit(f"Agent nao registrado: {args.agent_id}")
+    if not target:
+        raise SystemExit(f"Agent nao registrado: {args.to}")
+    message = {
+        "ts": utc_now(),
+        "from_agent": args.agent_id,
+        "to_agent": args.to,
+        "text": args.text,
+        "read": False,
+    }
+    append_jsonl(agent_messages_path(root), message)
+    append_harness_event(
+        root,
+        "agent_message",
+        {
+            "from_agent": args.agent_id,
+            "to_agent": args.to,
+            "text": args.text,
+            "summary": args.text,
+        },
+        task_id=str(target.get("task_id") or sender.get("task_id") or ""),
+        agent_id=args.agent_id,
+        source="agent",
+    )
+    print(f"Mensagem enviada: {args.agent_id} -> {args.to}")
+
+
+def command_agent_kill(args: argparse.Namespace) -> None:
+    root = prepared_repo(args)
+    registry = load_agent_registry(root)
+    agents = [agent for agent in registry.get("agents", []) if isinstance(agent, dict)]
+    agent = next((item for item in agents if item.get("id") == args.agent_id), None)
+    if not agent:
+        raise SystemExit(f"Agent nao registrado: {args.agent_id}")
+    now = utc_now()
+    agent["state"] = "done"
+    agent["status"] = "done"
+    agent["speech"] = args.reason or "Sessao encerrada."
+    agent["pty_id"] = ""
+    agent["updated_at"] = now
+    agent["heartbeat_at"] = now
+    save_agent_registry(root, {"agents": agents, "updated_at": now})
+    append_harness_event(
+        root,
+        "agent_killed",
+        {
+            "agent_id": args.agent_id,
+            "reason": args.reason or "",
+            "summary": args.reason or "Agent encerrado.",
+        },
+        task_id=str(agent.get("task_id") or ""),
+        agent_id=args.agent_id,
+        source="agent",
+    )
+    print(f"Agent encerrado: {args.agent_id}")
 
 
 def command_agent_list(args: argparse.Namespace) -> None:
@@ -2731,6 +2854,12 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard_hub_state.add_argument("--watch-repo", action="append", help="Repo Harness a monitorar; repetivel")
     dashboard_hub_state.add_argument("--json", action="store_true", help="Imprime JSON")
     dashboard_hub_state.set_defaults(func=command_dashboard_hub_state)
+    dashboard_hub_config = dashboard_sub.add_parser("hub-configure", help="Configura o sidecar interativo do hub")
+    dashboard_hub_config.add_argument("--allow-remote-execution", action="store_true")
+    dashboard_hub_config.add_argument("--block-remote-execution", action="store_true")
+    dashboard_hub_config.add_argument("--max-agents", type=int)
+    dashboard_hub_config.add_argument("--default-cli", choices=["codex", "claude"])
+    dashboard_hub_config.set_defaults(func=command_dashboard_hub_configure)
     dashboard_hub_serve = dashboard_sub.add_parser("hub-serve", help="Serve hub pixel-art multi-repo")
     dashboard_hub_serve.add_argument("--watch-repo", action="append", help="Repo Harness a monitorar; repetivel")
     dashboard_hub_serve.add_argument("--host", default="127.0.0.1")
@@ -2750,25 +2879,56 @@ def build_parser() -> argparse.ArgumentParser:
     agent_register = agent_sub.add_parser("register", help="Registra ou atualiza um agent")
     agent_register.add_argument("agent_id")
     agent_register.add_argument("--name")
-    agent_register.add_argument("--role", default="operator", choices=["builder", "reviewer", "security", "reporter", "operator"])
+    agent_register.add_argument(
+        "--role",
+        default="operator",
+        choices=[
+            "planner",
+            "builder",
+            "reviewer",
+            "security",
+            "auditor",
+            "research",
+            "researcher",
+            "reporter",
+            "operator",
+        ],
+    )
     agent_register.add_argument("--state", default="working", choices=["working", "idle", "blocked", "done"])
     agent_register.add_argument("--task-id")
     agent_register.add_argument("--phase")
     agent_register.add_argument("--speech")
     agent_register.add_argument("--run-dir")
     agent_register.add_argument("--surface-id")
+    agent_register.add_argument("--cli", choices=["codex", "claude"])
+    agent_register.add_argument("--sector", choices=["plan", "implement", "review", "research", "security", "report", "idle"])
+    agent_register.add_argument("--pty-id")
+    agent_register.add_argument("--cwd")
+    agent_register.add_argument("--transcript-path")
+    agent_register.add_argument("--spawned-by", choices=["ui", "event", "supervisor"])
     agent_register.set_defaults(func=command_agent_register)
     agent_heartbeat = agent_sub.add_parser("heartbeat", help="Atualiza heartbeat e fala de um agent")
     agent_heartbeat.add_argument("agent_id")
     agent_heartbeat.add_argument("--state", choices=["working", "idle", "blocked", "done"])
     agent_heartbeat.add_argument("--speech")
     agent_heartbeat.add_argument("--surface-id")
+    agent_heartbeat.add_argument("--sector", choices=["plan", "implement", "review", "research", "security", "report", "idle"])
+    agent_heartbeat.add_argument("--pty-id")
     agent_heartbeat.set_defaults(func=command_agent_heartbeat)
     agent_done = agent_sub.add_parser("done", help="Marca agent como finalizado")
     agent_done.add_argument("agent_id")
     agent_done.add_argument("--state", default="done", choices=["done", "idle", "blocked"])
     agent_done.add_argument("--speech")
     agent_done.set_defaults(func=command_agent_done)
+    agent_message = agent_sub.add_parser("message", help="Envia mensagem entre agents")
+    agent_message.add_argument("agent_id")
+    agent_message.add_argument("--to", required=True)
+    agent_message.add_argument("--text", required=True)
+    agent_message.set_defaults(func=command_agent_message)
+    agent_kill = agent_sub.add_parser("kill", help="Marca agent como encerrado pelo hub")
+    agent_kill.add_argument("agent_id")
+    agent_kill.add_argument("--reason")
+    agent_kill.set_defaults(func=command_agent_kill)
     agent_list = agent_sub.add_parser("list", help="Lista agents registrados")
     agent_list.add_argument("--json", action="store_true")
     agent_list.set_defaults(func=command_agent_list)

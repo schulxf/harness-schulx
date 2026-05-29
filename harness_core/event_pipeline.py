@@ -4,12 +4,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .agent_registry import upsert_agent
+from .agent_registry import load_agent_registry, upsert_agent
 from .clock import utc_now
 from .config import config_bool, telegram_config
 from .context_preflight import load_config
 from .events import append_harness_event
-from .hub_agents import hub_agent_name_for_role
+from .hub_agents import hub_agent_name_for_role, sector_for_event
 from .paths import config_path, relative_to_root, telegram_root, to_posix
 from .run_state import find_unevaluated_runs
 from .storage import append_jsonl
@@ -56,9 +56,19 @@ def sync_agent_from_event(root: Path, event: dict[str, Any]) -> None:
         "fix_brief_created": f"Preparando correcao de {task_id}.",
         "report_created": f"Relatorio de {task_id} fechado.",
     }.get(event_type, f"Atualizei {task_id}.")
-    upsert_agent(
+    agent_id = str(event.get("agent_id") or f"{role}-{task_id}").lower()
+    previous = next(
+        (
+            item
+            for item in load_agent_registry(root).get("agents", [])
+            if isinstance(item, dict) and item.get("id") == agent_id
+        ),
+        {},
+    )
+    sector = sector_for_event(event_type, payload)
+    agent = upsert_agent(
         root,
-        str(event.get("agent_id") or f"{role}-{task_id}").lower(),
+        agent_id,
         name=hub_agent_name_for_role(role),
         role=role,
         state=state,
@@ -68,7 +78,22 @@ def sync_agent_from_event(root: Path, event: dict[str, Any]) -> None:
         speech=str(speech),
         run_dir=str(event.get("run_dir") or ""),
         event_id=str(event.get("id") or ""),
+        sector=sector,
+        spawned_by="event",
     )
+    if sector and sector != str(previous.get("sector") or ""):
+        append_harness_event(
+            root,
+            "agent_sector_changed",
+            {
+                "agent_id": agent_id,
+                "sector": agent.get("sector") or sector,
+                "summary": f"{agent.get('name') or agent_id} foi para {agent.get('sector') or sector}.",
+            },
+            task_id=task_id,
+            agent_id=agent_id,
+            source="hub",
+        )
 
 
 def telegram_event_message(

@@ -100,6 +100,31 @@ def test_text_and_json_storage_round_trip_with_created_parents(tmp_path: Path) -
     assert storage.read_json(tmp_path / "missing.json", default={"missing": True}) == {"missing": True}
 
 
+def test_text_and_json_writes_use_temp_file_replace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[Path, Path]] = []
+    original_replace = storage.os.replace
+
+    def replace_spy(src: Path | str, dst: Path | str) -> None:
+        src_path = Path(src)
+        dst_path = Path(dst)
+        calls.append((src_path, dst_path))
+        assert src_path.parent == dst_path.parent
+        assert src_path.name != dst_path.name
+        original_replace(src_path, dst_path)
+
+    monkeypatch.setattr(storage.os, "replace", replace_spy)
+
+    text_path = tmp_path / "nested" / "atomic.txt"
+    json_path = tmp_path / "nested" / "atomic.json"
+    storage.write_text(text_path, "atomic\n")
+    storage.write_json(json_path, {"ok": True})
+
+    assert text_path.read_text(encoding="utf-8") == "atomic\n"
+    assert storage.read_json(json_path) == {"ok": True}
+    assert [dst for _, dst in calls] == [text_path, json_path]
+    assert list((tmp_path / "nested").glob("*.tmp")) == []
+
+
 def test_read_text_accepts_utf8_bom(tmp_path: Path) -> None:
     path = tmp_path / "bom.txt"
     path.write_bytes(b"\xef\xbb\xbfhello")

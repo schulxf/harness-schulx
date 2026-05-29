@@ -406,6 +406,67 @@ def test_dashboard_hub_repo_registry_and_manual_agent(tmp_path):
     assert watched_state["agents"][0]["speech"] == "Montando teste local."
 
 
+def test_dashboard_hub_configure_and_agent_sidecar_commands(tmp_path):
+    repo = init_repo(tmp_path)
+
+    assert run(
+        [
+            "--repo",
+            str(repo),
+            "dashboard",
+            "hub-configure",
+            "--allow-remote-execution",
+            "--max-agents",
+            "3",
+            "--default-cli",
+            "claude",
+        ]
+    ) == 0
+    config = read_json(repo / ".harness" / "config.json")
+    assert config["hub"]["allow_remote_execution"] is True
+    assert config["hub"]["max_agents"] == 3
+    assert config["hub"]["default_cli"] == "claude"
+
+    assert run(
+        [
+            "--repo",
+            str(repo),
+            "agent",
+            "register",
+            "agent-a",
+            "--role",
+            "builder",
+            "--state",
+            "idle",
+            "--cli",
+            "codex",
+            "--sector",
+            "implement",
+            "--pty-id",
+            "pty-a",
+            "--cwd",
+            ".",
+            "--spawned-by",
+            "ui",
+        ]
+    ) == 0
+    assert run(["--repo", str(repo), "agent", "register", "agent-b", "--role", "reviewer"]) == 0
+    assert run(["--repo", str(repo), "agent", "message", "agent-a", "--to", "agent-b", "--text", "Revisa isso"]) == 0
+    assert run(["--repo", str(repo), "agent", "kill", "agent-a", "--reason", "Teste encerrado"]) == 0
+
+    registry = read_json(repo / ".harness" / "agents" / "registry.json")
+    agent_a = next(agent for agent in registry["agents"] if agent["id"] == "agent-a")
+    assert agent_a["state"] == "done"
+    assert agent_a["pty_id"] == ""
+    assert agent_a["cli"] == "codex"
+    messages = (repo / ".harness" / "agents" / "messages.jsonl").read_text(encoding="utf-8")
+    assert "Revisa isso" in messages
+    events = (repo / ".harness" / "events.jsonl").read_text(encoding="utf-8")
+    assert "agent_spawned" in events
+    assert "agent_message" in events
+    assert "agent_killed" in events
+
+
 def test_wmux_state_handles_unavailable_pipe(monkeypatch):
     monkeypatch.setattr("harness_core.wmux.wmux_pipe_path", lambda: r"\\.\pipe\missing-harness-test")
     state = harness.collect_wmux_state()

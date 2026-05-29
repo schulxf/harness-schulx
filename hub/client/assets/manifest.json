@@ -1,0 +1,47 @@
+{
+  "downloaded_at": "2026-05-29",
+  "packs": [
+    {
+      "id": "kenney_tiny_town",
+      "name": "Tiny Town",
+      "author": "Kenney",
+      "license": "CC0 1.0 Universal",
+      "source_url": "https://kenney.nl/assets/tiny-town",
+      "local_path": "assets/vendor/kenney_tiny-town",
+      "tilesheet": "assets/vendor/kenney_tiny-town/Tilemap/tilemap_packed.png",
+      "preview": "assets/vendor/kenney_tiny-town/Preview.png",
+      "role": "default_repo_theme"
+    },
+    {
+      "id": "kenney_tiny_dungeon",
+      "name": "Tiny Dungeon",
+      "author": "Kenney",
+      "license": "CC0 1.0 Universal",
+      "source_url": "https://kenney.nl/assets/tiny-dungeon",
+      "local_path": "assets/vendor/kenney_tiny-dungeon",
+      "tilesheet": "assets/vendor/kenney_tiny-dungeon/Tilemap/tilemap_packed.png",
+      "preview": "assets/vendor/kenney_tiny-dungeon/Preview.png",
+      "role": "alternate_repo_theme"
+    },
+    {
+      "id": "ninja_adventure",
+      "name": "Ninja Adventure Asset Pack",
+      "author": "Pixel-Boy and AAA",
+      "license": "CC0 1.0 Universal",
+      "source_url": "https://pixel-boy.itch.io/ninja-adventure-asset-pack",
+      "repo_url": "https://github.com/pixel-boy/NinjaAdventure",
+      "local_path": "assets/vendor/ninja_adventure/NinjaAdventure-main",
+      "sprite_root": "assets/vendor/ninja_adventure/NinjaAdventure-main/content/character",
+      "role": "agent_character_sprites"
+    },
+    {
+      "id": "harness_agents_sheet",
+      "name": "Harness Agent Spritesheet",
+      "author": "Harness, derived from Ninja Adventure",
+      "license": "CC0 1.0 Universal",
+      "source_url": "https://github.com/pixel-boy/NinjaAdventure",
+      "local_path": "assets/sprites/agents.png",
+      "role": "runtime_agent_sprites"
+    }
+  ]
+}

@@ -8,6 +8,7 @@ from harness_core.defaults import (
     DEFAULT_EVALUATION_POLICY,
     DEFAULT_FAILURE_POLICY,
     DEFAULT_GITHUB_CONFIG,
+    DEFAULT_HUB_CONFIG,
     DEFAULT_OPERATION_PROFILES,
     DEFAULT_REVIEW_POLICY,
     DEFAULT_TELEGRAM_CONFIG,
@@ -107,3 +108,7 @@ def telegram_config(config: dict[str, Any]) -> dict[str, Any]:
     configured = config.get("telegram", {})
     return deep_merge(DEFAULT_TELEGRAM_CONFIG, configured if isinstance(configured, dict) else {})
 
+
+def hub_config(config: dict[str, Any]) -> dict[str, Any]:
+    configured = config.get("hub", {})
+    return deep_merge(DEFAULT_HUB_CONFIG, configured if isinstance(configured, dict) else {})

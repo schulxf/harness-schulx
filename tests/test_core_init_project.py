@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from harness_core.defaults import DEFAULT_HUB_CONFIG
 from harness_core.init_project import initialize_harness_project
 from harness_core.paths import config_path, harness_root
 from harness_core.storage import read_json
@@ -23,6 +24,7 @@ def test_initialize_harness_project_creates_layout_and_config(tmp_path: Path) ->
     assert config["project_name"] == "Projeto Teste"
     assert config["runner_version"] == "test-version"
     assert config["default_sensors"] == ["python -m pytest"]
+    assert config["hub"] == DEFAULT_HUB_CONFIG
     assert read_json(hroot / "tasks" / "index.json", []) == []
 
 

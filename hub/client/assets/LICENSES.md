@@ -1,39 +1,32 @@
-# Registro de licenças de assets
+# Asset License Register
 
-Toda arte usada no `harness-hub` é registrada aqui — pack, autor, URL, licença e
-data — para rastreabilidade, **mesmo quando a licença não exige atribuição** (CC0).
+All visual assets bundled for the optional `harness-hub` pixel client are
+tracked here for auditability, even when attribution is not required.
 
-## Decisão de assets (2026-05-29)
+## Downloaded Assets
 
-Fonte primária: **Kenney (`kenney.nl`)**, licença **CC0 1.0 Universal** (domínio
-público). Sem custo e sem atribuição obrigatória. Escolhido pela variedade de
-tilesets, permitindo **um tema visual por repo** (ver `docs/HUB_PIXEL_GAME_PLAN.md`
-§6 e §14).
-
-> CC0 = uso livre, inclusive comercial, sem necessidade de crédito. Mantemos o
-> registro abaixo por boa prática e para facilitar troca/auditoria de assets.
-
-## Tilesets (Kenney · CC0)
-
-| Asset | Autor | Licença | URL | Status | Adicionado |
+| Asset | Author | License | Source | Local path | Added |
 |---|---|---|---|---|---|
-| Tiny Town | Kenney | CC0 1.0 | https://kenney.nl/assets/tiny-town | a baixar | — |
-| RPG Urban Pack | Kenney | CC0 1.0 | https://kenney.nl/assets/rpg-urban-pack | a baixar | — |
-| Tiny Dungeon | Kenney | CC0 1.0 | https://kenney.nl/assets/tiny-dungeon | a baixar | — |
-| Roguelike/RPG Pack | Kenney | CC0 1.0 | https://kenney.nl/assets/roguelike-rpg-pack | a baixar | — |
+| Tiny Town 1.1 | Kenney | CC0 1.0 Universal | https://kenney.nl/assets/tiny-town | `hub/client/assets/vendor/kenney_tiny-town/` | 2026-05-29 |
+| Tiny Dungeon 1.0 | Kenney | CC0 1.0 Universal | https://kenney.nl/assets/tiny-dungeon | `hub/client/assets/vendor/kenney_tiny-dungeon/` | 2026-05-29 |
+| Ninja Adventure Asset Pack | Pixel-Boy and AAA | CC0 1.0 Universal | https://pixel-boy.itch.io/ninja-adventure-asset-pack and https://github.com/pixel-boy/NinjaAdventure | `hub/client/assets/vendor/ninja_adventure/` | 2026-05-29 |
+| Harness Agent Spritesheet | Harness, derived from Ninja Adventure | CC0 1.0 Universal | https://github.com/pixel-boy/NinjaAdventure | `hub/client/assets/sprites/agents.png` | 2026-05-29 |
 
-## Personagens
+## License Notes
 
-Decisão pendente no M1 (ver plano §14): animação simples com sprite Kenney (CC0)
-**ou** parear com um sheet de personagem CC0 com walk 4-direções.
+- Kenney packs include their own `License.txt` files in each downloaded folder.
+- The Ninja Adventure itch.io page states the pack is released under Creative
+  Commons Zero (CC0) and attribution is appreciated but not required.
+- CC0 assets can be used for personal, educational, and commercial projects.
 
-| Asset | Autor | Licença | URL | Status | Adicionado |
-|---|---|---|---|---|---|
-| _(candidato)_ Ninja Adventure Asset Pack | Pixel-Boy & AAA | CC0 1.0 | https://pixel-boy.itch.io/ninja-adventure-asset-pack | não decidido | — |
+## Intended Use
 
-## Como adicionar um asset
+- `kenney_tiny-town`: default warm repo map theme.
+- `kenney_tiny-dungeon`: alternate infrastructure/security repo map theme.
+- `ninja_adventure`: animated top-down character sprites and optional map props.
+- `assets/sprites/agents.png`: compact runtime sheet consumed by the browser UI.
 
-1. Baixe o pack e coloque em `hub/client/assets/{tilesets,sprites,maps}/`.
-2. Adicione uma linha na tabela acima (pack, autor, licença, URL, data).
-3. Se a licença **não** for CC0, confira as obrigações (atribuição, share-alike)
-   antes de usar — e atente ao tipo de distribuição do hub.
+## Maintenance Rule
+
+When adding or replacing assets, add the source URL, author, license, local path,
+and date here before wiring the asset into the client.
