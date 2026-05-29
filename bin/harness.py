@@ -52,6 +52,11 @@ from harness_core.artifacts import (  # noqa: E402
     save_artifacts,
 )
 from harness_core.budgeting import task_budget  # noqa: E402
+from harness_core.checkpoints import (  # noqa: E402
+    create_checkpoint,
+    latest_checkpoint_path,
+    render_resume_brief,
+)
 from harness_core.clock import utc_now  # noqa: E402
 from harness_core.codex_exec import (  # noqa: E402
     build_codex_exec_argv,
@@ -374,84 +379,6 @@ def append_and_maybe_notify_event(
             telegram_root(root) / "notify-errors.jsonl",
             {"ts": utc_now(), "event_type": event_type, "error": str(exc)},
         )
-
-
-def create_checkpoint(
-    root: Path,
-    task_id: str,
-    reason: str,
-    run_dir: Path | None = None,
-    extra: dict[str, Any] | None = None,
-) -> Path:
-    task = find_task(root, task_id)
-    run_dir = run_dir or latest_run_dir_or_none(root, task_id)
-    payload: dict[str, Any] = {
-        "task_id": task_id,
-        "title": task.get("title"),
-        "task_status": task.get("status"),
-        "reason": reason,
-        "created_at": utc_now(),
-        "run_dir": str(run_dir) if run_dir else None,
-        "contract_exists": contract_file_path(root, task_id).exists(),
-        "git_status": git_output(root, ["status", "--short"]) if is_git_repo(root) else "",
-        "queue": active_queue_item(root),
-        "budget": task.get("budget", {}),
-    }
-    if run_dir:
-        for name in ["sensors.json", "evaluation.json"]:
-            path = run_dir / name
-            if path.exists():
-                payload[name.removesuffix(".json")] = read_json(path, {})
-    if extra:
-        payload.update(extra)
-    root_dir = checkpoints_root(root, task_id)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    path = root_dir / f"checkpoint-{stamp}.json"
-    write_json(path, payload)
-    write_json(root_dir / "latest.json", payload)
-    return path
-
-
-def latest_checkpoint_path(root: Path, task_id: str) -> Path | None:
-    latest = checkpoints_root(root, task_id) / "latest.json"
-    if latest.exists():
-        return latest
-    paths = sorted(checkpoints_root(root, task_id).glob("checkpoint-*.json"))
-    return paths[-1] if paths else None
-
-
-def render_resume_brief(root: Path, task_id: str, checkpoint: dict[str, Any]) -> str:
-    task = find_task(root, task_id)
-    contract = read_json(contract_file_path(root, task_id), {}) if contract_file_path(root, task_id).exists() else {}
-    run_dir = checkpoint.get("run_dir") or "sem run ainda"
-    next_steps = []
-    status = task.get("status")
-    if not contract:
-        next_steps.append(f"1. Criar contrato: python {Path(__file__).resolve()} --repo {root} contract {task_id}")
-    elif status in TASK_STATUSES_READY_TO_START:
-        next_steps.append(f"1. Iniciar run: python {Path(__file__).resolve()} --repo {root} start {task_id}")
-    elif status in TASK_STATUSES_WORKING:
-        tier = fastest_available_sensor_tier(contract)
-        next_steps.append(f"1. Rodar sensores rapidos: python {Path(__file__).resolve()} --repo {root} sensors {task_id} --tier {tier} --reviewed")
-        next_steps.append(f"2. Gerar avaliacao/review: python {Path(__file__).resolve()} --repo {root} evaluate {task_id}")
-    elif status == TASK_STATUS_SENSORS_PASSED:
-        next_steps.append(f"1. Registrar avaliacao ou gerar handoffs: python {Path(__file__).resolve()} --repo {root} evaluate {task_id}")
-    elif status in TASK_STATUSES_COMPLETE:
-        next_steps.append(f"1. Gerar relatorio: python {Path(__file__).resolve()} --repo {root} report {task_id}")
-    else:
-        next_steps.append("1. Rodar `status` e decidir a proxima etapa.")
-    return (
-        f"# Resume brief - {task_id}\n\n"
-        f"Task: {task.get('title')}\n"
-        f"Status atual: {status}\n"
-        f"Checkpoint: {checkpoint.get('created_at')}\n"
-        f"Motivo: {checkpoint.get('reason')}\n"
-        f"Run: {run_dir}\n\n"
-        "## Proximo passo recomendado\n\n"
-        f"{chr(10).join(next_steps)}\n\n"
-        "## Status do Git no checkpoint\n\n"
-        f"```text\n{checkpoint.get('git_status') or 'sem status registrado'}\n```\n"
-    )
 
 
 def maybe_warn_unevaluated_runs(root: Path, config: dict[str, Any], task_id: str | None = None) -> None:
@@ -1047,7 +974,12 @@ def handle_telegram_command(
             latest = latest_checkpoint_path(root, task_id)
             if latest:
                 checkpoint = read_json(latest, {})
-                message = render_resume_brief(root, task_id, checkpoint)
+                message = render_resume_brief(
+                    root,
+                    task_id,
+                    checkpoint,
+                    harness_script=Path(__file__).resolve(),
+                )
             else:
                 message = f"Nenhum checkpoint encontrado para {task_id}."
         if reply:
@@ -2216,7 +2148,12 @@ def command_checkpoint_resume_plan(args: argparse.Namespace) -> None:
             checkpoint = read_json(latest, {})
     if not checkpoint:
         checkpoint = {"task_id": args.task_id, "summary": "Sem checkpoint anterior.", "next_steps": []}
-    plan = render_resume_brief(root, args.task_id, checkpoint)
+    plan = render_resume_brief(
+        root,
+        args.task_id,
+        checkpoint,
+        harness_script=Path(__file__).resolve(),
+    )
     if checkpoint.get("summary"):
         plan += f"\n## Ultimo resumo\n\n{checkpoint.get('summary')}\n"
     if checkpoint.get("next_steps"):
