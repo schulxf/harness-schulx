@@ -48,7 +48,11 @@ def test_telegram_send_message_uses_configured_chats(monkeypatch: pytest.MonkeyP
     assert [call[2]["chat_id"] for call in calls] == ["1", "2"]
 
 
-def test_telegram_send_message_returns_empty_without_token_or_targets() -> None:
+def test_telegram_send_message_returns_empty_without_token_or_targets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HARNESS_TELEGRAM_BOT_TOKEN", raising=False)
+
     assert telegram.telegram_send_message({"telegram": {"chat_ids": ["1"]}}, "hello") == []
     assert telegram.telegram_send_message({"telegram": {}}, "hello") == []
 
@@ -62,6 +66,70 @@ def test_telegram_api_call_raises_for_telegram_error(monkeypatch: pytest.MonkeyP
 
     with pytest.raises(HarnessError, match="bad request"):
         telegram.telegram_api_call("tok", "sendMessage", {"chat_id": "1"})
+
+
+def test_openai_extract_output_text_handles_responses_shape() -> None:
+    assert telegram.openai_extract_output_text({"output_text": " direct "}) == "direct"
+    assert telegram.openai_extract_output_text(
+        {
+            "output": [
+                {"content": [{"text": "first"}, {"text": "second"}]},
+            ]
+        }
+    ) == "first\nsecond"
+
+
+def test_telegram_message_media_selects_largest_photo_and_documents() -> None:
+    assert telegram.telegram_message_media(
+        {"photo": [{"file_id": "small", "file_size": 1}, {"file_id": "large", "file_size": 2}]}
+    ) == ("image", "large", ".jpg")
+    assert telegram.telegram_message_media(
+        {"document": {"file_id": "doc", "mime_type": "audio/mpeg", "file_name": "voice.m4a"}}
+    ) == ("audio", "doc", ".m4a")
+
+
+def test_build_telegram_prompt_text_prefers_text_then_media_context() -> None:
+    assert telegram.build_telegram_prompt_text("image", "  do this  ", "", "", "") == "do this"
+    assert telegram.build_telegram_prompt_text(
+        "image",
+        "",
+        "caption",
+        "local/file.jpg",
+        "uma tela de login",
+    ) == "caption\n\nDescricao da imagem: uma tela de login\n\nArquivo recebido: local/file.jpg"
+
+
+def test_render_task_body_from_telegram_includes_origin_and_media_warning() -> None:
+    body = telegram.render_task_body_from_telegram(
+        {
+            "prompt_text": "Criar login",
+            "chat_id": "123",
+            "message_id": 10,
+            "update_id": 20,
+            "media": {"local_path": "media/a.jpg"},
+            "media_analysis_error": "sem chave",
+        }
+    )
+
+    assert "Criar login" in body
+    assert "- Chat: 123" in body
+    assert "- Arquivo: media/a.jpg" in body
+    assert "Aviso de leitura de midia: sem chave" in body
+
+
+def test_save_telegram_inbox_item_writes_json_and_index(tmp_path: Path) -> None:
+    path = telegram.save_telegram_inbox_item(tmp_path, {"id": "tg-1", "text": "hello"})
+
+    assert path == tmp_path / ".harness" / "inbox" / "telegram" / "tg-1.json"
+    assert read_json(path)["text"] == "hello"
+    assert (tmp_path / ".harness" / "inbox" / "telegram" / "index.jsonl").exists()
+
+
+def test_analyze_telegram_media_skips_when_disabled(tmp_path: Path) -> None:
+    media_path = tmp_path / "voice.ogg"
+    media_path.write_text("x", encoding="utf-8")
+
+    assert telegram.analyze_telegram_media(media_path, "voice", {"telegram": {"openai_media": {}}}) == ("", None)
 
 
 def test_telegram_poll_updates_builds_standard_payload(monkeypatch: pytest.MonkeyPatch) -> None:
