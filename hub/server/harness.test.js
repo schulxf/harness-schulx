@@ -86,3 +86,46 @@ test("listRepoFiles returns useful files and skips generated state", () => {
   assert.equal(files.some((file) => file.startsWith(".harness/")), false);
   assert.equal(files.some((file) => file.startsWith("node_modules/")), false);
 });
+
+test("reactivateAgent starts a new PTY for an existing offline agent", () => {
+  const repo = makeRepo();
+  harness.augmentAgent(repo, "builder-1", {
+    name: "Builder",
+    role: "builder",
+    state: "offline",
+    status: "offline",
+    cli: "shell",
+    sector: "implement",
+    pty_id: "pty-old",
+    cwd: repo,
+  });
+  const fakePty = {
+    available: true,
+    hasAgent: () => false,
+    get: () => null,
+    spawnSession(options) {
+      return {
+        ok: true,
+        session: {
+          id: "pty-new",
+          agent_id: options.agentId,
+          command: options.command,
+          args: options.args,
+          cwd: options.cwd,
+          exit_code: null,
+        },
+      };
+    },
+  };
+
+  const result = harness.reactivateAgent(repo, "builder-1", harness.mergeHubConfig(harness.loadRepoConfig(repo)), fakePty);
+  const updated = harness.loadAgents(repo).find((agent) => agent.id === "builder-1");
+
+  assert.equal(result.ok, true);
+  assert.equal(result.agent.id, "builder-1");
+  assert.equal(result.agent.state, "working");
+  assert.equal(result.agent.pty_id, "pty-new");
+  assert.equal(result.event.type, "agent_reactivated");
+  assert.equal(updated.pty_id, "pty-new");
+  assert.equal(updated.status, "working");
+});

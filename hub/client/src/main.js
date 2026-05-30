@@ -29,6 +29,7 @@ const terminal = new AgentTerminal(document.getElementById("agentModal"), {
   onKill: killAgentById,
   onInput: markAgentWorkingFromTerminal,
   onComplete: markAgentCompleted,
+  onReactivate: reactivateAgentById,
   hub,
 });
 const agents = new AgentLayer();
@@ -271,6 +272,14 @@ async function killAgentById(agentId) {
   if (selectedAgentId === agentId) selectedAgentId = "";
   terminal.close();
   await refreshWorld();
+}
+
+async function reactivateAgentById(agentId) {
+  const { repo } = findAgentRecord(agentId);
+  const response = await hub.postJson(`/api/agents/${encodeURIComponent(agentId)}/reactivate`, { repo: repo?.root || selectedRepo()?.root });
+  await refreshWorld();
+  markAgentWorkingFromTerminal(agentId);
+  return findAgentRecord(agentId).agent || response.agent || null;
 }
 
 // Spawn an agent in a repo and return the freshly-registered agent object.

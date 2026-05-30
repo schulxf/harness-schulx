@@ -327,6 +327,15 @@ export function applyWorldEvent(world, event) {
     if (to) upsertAgent(repo, { id: to, state: "talking", speech: payload.text || payload.message || "Message received." });
   } else if (event.type === "agent_terminal_attached") {
     upsertAgent(repo, { id: payload.agent_id || payload.id, pty_id: payload.pty_id, speech: "Terminal attached." });
+  } else if (event.type === "agent_reactivated") {
+    upsertAgent(repo, {
+      id: payload.agent_id || payload.id,
+      pty_id: payload.pty_id,
+      state: payload.state || "working",
+      status: payload.state || "working",
+      sector: payload.sector || sectorForEvent(event.type),
+      speech: payload.summary || "Agent reactivated.",
+    });
   } else if (event.type === "agent_done") {
     upsertAgent(repo, {
       id: payload.agent_id || payload.id,

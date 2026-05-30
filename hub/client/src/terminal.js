@@ -71,11 +71,12 @@ export class AgentTerminal {
       info: root.querySelector("#amInfo"),
       termTitle: root.querySelector("#amTermTitle"),
       mount: root.querySelector("#amTerm"),
+      reconnect: root.querySelector("#amReconnect"),
     };
 
     this.els.info.addEventListener("click", (event) => this.handleInfoClick(event));
     root.querySelectorAll("[data-close]").forEach((el) => el.addEventListener("click", () => this.close()));
-    root.querySelector("#amReconnect").addEventListener("click", () => this.connect());
+    this.els.reconnect.addEventListener("click", () => this.reconnectOrReactivate());
     root.querySelector("#amClear").addEventListener("click", () => this.term && this.term.clear());
     root.querySelector("#amInterrupt").addEventListener("click", () => { this.sendInput("\x03"); this.focus(); });
     root.querySelector("#amKill").addEventListener("click", () => this.kill());
@@ -119,6 +120,7 @@ export class AgentTerminal {
     this.els.name.textContent = a.name || a.id;
     this.els.sub.innerHTML = `<span style="color:${meta.color}">${esc(meta.label)}</span> · ${esc(activityLabel(a))}`;
     this.els.termTitle.textContent = `${a.cli || "terminal"} — ${this.repo?.project || ""}`;
+    this.renderReconnectAction();
     this.renderInfo();
   }
 
@@ -226,6 +228,35 @@ export class AgentTerminal {
   setStatus(text, state) {
     this.els.status.textContent = text;
     this.els.status.dataset.state = state || "idle";
+    this.renderReconnectAction();
+  }
+
+  shouldReactivate() {
+    return Boolean(this.agent && this.handlers.onReactivate && (this.lastConnectFailed || String(this.agent.state || "").toLowerCase() === "offline"));
+  }
+
+  renderReconnectAction() {
+    if (!this.els.reconnect) return;
+    this.els.reconnect.textContent = this.shouldReactivate() ? "Reactivate" : "Reconnect";
+  }
+
+  async reconnectOrReactivate() {
+    if (!this.shouldReactivate()) {
+      this.connect();
+      return;
+    }
+    this.setStatus("Reactivating...", "connecting");
+    try {
+      const updated = await this.handlers.onReactivate(this.agent.id);
+      if (updated) this.agent = updated;
+      this.lastConnectFailed = false;
+      this.renderHeader();
+      this.term.writeln("\r\n\x1b[32m[agent reactivated]\x1b[0m");
+      this.connect();
+    } catch (error) {
+      this.setStatus("Failed", "error");
+      this.term.writeln(`\r\n\x1b[31m${String(error?.message || error)}\x1b[0m`);
+    }
   }
 
   connect() {
@@ -238,6 +269,7 @@ export class AgentTerminal {
       return;
     }
     this.setStatus("Connecting…", "connecting");
+    this.lastConnectFailed = false;
     let socket;
     try {
       socket = new WebSocket(wsUrl(this.agent.id, this.token, this.handlers.hub));
@@ -259,10 +291,12 @@ export class AgentTerminal {
       this.setStatus("Disconnected", "offline");
     });
     socket.addEventListener("error", () => {
+      this.lastConnectFailed = true;
       this.setStatus("No terminal", "error");
       this.term.writeln("\r\n\x1b[31mNo live terminal for this agent.\x1b[0m");
       this.term.writeln("\x1b[90mThe PTY only exists while the sidecar that spawned it runs,\x1b[0m");
       this.term.writeln("\x1b[90mand the repo needs hub.allow_remote_execution = true.\x1b[0m");
+      this.term.writeln("\x1b[90mClick Reactivate to create a new terminal for this same agent.\x1b[0m");
     });
   }
 

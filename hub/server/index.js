@@ -281,6 +281,15 @@ async function handleKill(agentId, body, context) {
   return { ok: true, killed_pty: killedPty, agent };
 }
 
+async function handleReactivate(agentId, body, context) {
+  const repoRoot = await repoForAgentOrBody(agentId, body, context);
+  const hubConfig = requireRemoteExecution(repoRoot);
+  if (!context.ptyManager.hasAgent(agentId) && context.ptyManager.liveCount() >= hubConfig.max_agents) {
+    throw new harness.HttpError(409, "hub_max_agents_reached", { max_agents: hubConfig.max_agents });
+  }
+  return harness.reactivateAgent(repoRoot, agentId, hubConfig, context.ptyManager);
+}
+
 async function handleAddRepo(body, context) {
   const repoPath = body.path;
   if (!repoPath) {
@@ -400,6 +409,11 @@ async function routeRequest(req, res, context) {
       sendJson(res, 200, await handleKill(decodeURIComponent(killMatch[1]), body, context));
       return;
     }
+    const reactivateMatch = urlObject.pathname.match(/^\/api\/agents\/([^/]+)\/reactivate$/);
+    if (reactivateMatch) {
+      sendJson(res, 200, await handleReactivate(decodeURIComponent(reactivateMatch[1]), body, context));
+      return;
+    }
     if (urlObject.pathname === "/api/repos/add") {
       sendJson(res, 200, await handleAddRepo(body, context));
       return;
@@ -424,7 +438,7 @@ function rejectUpgrade(socket, status, message) {
 }
 
 function createServer(options) {
-  const ptyManager = new PtyManager();
+  const ptyManager = options.ptyManager || new PtyManager();
   const context = {
     controlRoot: options.repo,
     watchRepos: options.watchRepos,

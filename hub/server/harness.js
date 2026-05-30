@@ -696,6 +696,62 @@ async function killAgent(repoRoot, agentId, reason) {
   return loadAgents(repoRoot).find((item) => String(item.id || "") === String(agentId)) || null;
 }
 
+function reactivateAgent(repoRoot, agentId, hubConfig, ptyManager) {
+  const id = String(agentId || "");
+  const existing = loadAgents(repoRoot).find((item) => String(item.id || "") === id);
+  if (!existing) {
+    throw new HttpError(404, "agent_not_found");
+  }
+  if (!ptyManager || !ptyManager.available) {
+    throw new HttpError(503, "pty_unavailable", { error: ptyManager && ptyManager.loadError });
+  }
+  const liveSession = ptyManager.hasAgent(id) ? ptyManager.get(id) : null;
+  if (liveSession) {
+    return {
+      ok: true,
+      already_live: true,
+      agent: existing,
+      pty: ptyManager.publicSession ? ptyManager.publicSession(liveSession) : { id: existing.pty_id, agent_id: id },
+      event: null,
+    };
+  }
+  const cliLaunch = normalizeCliDefinition(hubConfig, existing.cli || hubConfig.default_cli);
+  const cwd = String(existing.cwd || existing.repo_root || repoRoot);
+  const ptyResult = ptyManager.spawnSession({
+    agentId: id,
+    command: cliLaunch.command,
+    args: cliLaunch.args,
+    cwd,
+    idleTimeoutMs: hubConfig.pty.idle_timeout_s * 1000,
+    scrollbackBytes: hubConfig.pty.scrollback_bytes,
+  });
+  if (!ptyResult.ok) {
+    throw new HttpError(503, "pty_unavailable", ptyResult);
+  }
+  const ptyId = ptyResult.session.id;
+  const updated = augmentAgent(repoRoot, id, {
+    name: existing.name || id,
+    role: existing.role || "operator",
+    state: "working",
+    status: "working",
+    cli: cliLaunch.cli,
+    sector: existing.sector || sectorForRole(existing.role),
+    pty_id: ptyId,
+    repo_root: repoRoot,
+    cwd,
+    transcript_path: existing.transcript_path || path.join(".harness", "agents", id, "transcript.jsonl"),
+    spawned_by: existing.spawned_by || "ui",
+    speech: "Agent reactivated from harness-hub.",
+  });
+  const event = appendHarnessEvent(
+    repoRoot,
+    "agent_reactivated",
+    { agent_id: id, pty_id: ptyId, state: "working", sector: updated.sector, summary: "Agent reactivated." },
+    { agentId: id }
+  );
+  return { ok: true, already_live: false, agent: updated, pty: ptyResult.session, event };
+}
+
 function findAgentRepo(controlRoot, watchRepos, agentId) {
   for (const repoRoot of resolveRepoPaths(controlRoot, watchRepos)) {
     if (loadAgents(repoRoot).some((agent) => String(agent.id || "") === String(agentId))) {
@@ -773,6 +829,7 @@ module.exports = {
   normalizeCliDefinition,
   normalizePathKey,
   readNewEventsForRepos,
+  reactivateAgent,
   registerAgent,
   resolveRepoPaths,
   runHarnessCli,

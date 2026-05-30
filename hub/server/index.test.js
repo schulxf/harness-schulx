@@ -29,6 +29,32 @@ function get(port, requestPath, headers = {}) {
   });
 }
 
+function post(port, requestPath, payload, headers = {}) {
+  const body = Buffer.from(`${JSON.stringify(payload || {})}\n`, "utf8");
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      host: "127.0.0.1",
+      port,
+      path: requestPath,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": body.length,
+        ...headers,
+      },
+    }, (res) => {
+      let responseBody = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => {
+        responseBody += chunk;
+      });
+      res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body: responseBody }));
+    });
+    req.on("error", reject);
+    req.end(body);
+  });
+}
+
 test("served index injects the local hub token for same-origin browser actions", async (t) => {
   const { server } = createServer({
     repo: makeControlRepo(),
@@ -68,4 +94,55 @@ test("repo files endpoint requires token and lists registered repo files", async
   assert.equal(denied.status, 403);
   assert.equal(allowed.status, 200);
   assert.ok(payload.files.some((file) => file.path === "src/app.js"));
+});
+
+test("reactivate endpoint creates a fresh terminal for an offline agent", async (t) => {
+  const repo = makeControlRepo();
+  fs.writeFileSync(path.join(repo, ".harness", "config.json"), JSON.stringify({
+    project_name: "Control",
+    hub: { allow_remote_execution: true, default_cli: "shell" },
+  }), "utf8");
+  const harness = require("./harness");
+  harness.augmentAgent(repo, "builder-1", {
+    name: "Builder",
+    role: "builder",
+    state: "offline",
+    status: "offline",
+    cli: "shell",
+    sector: "implement",
+    pty_id: "pty-old",
+    cwd: repo,
+  });
+  const fakePty = {
+    available: true,
+    loadError: "",
+    liveCount: () => 0,
+    hasAgent: () => false,
+    hasPty: () => false,
+    get: () => null,
+    spawnSession: (options) => ({
+      ok: true,
+      session: { id: "pty-new", agent_id: options.agentId, command: options.command, args: options.args, cwd: options.cwd },
+    }),
+    close: () => {},
+  };
+  const { server } = createServer({
+    repo,
+    watchRepos: [],
+    token: "unit-token",
+    ptyManager: fakePty,
+  });
+  t.after(() => server.close());
+
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  const response = await post(port, "/api/agents/builder-1/reactivate", { repo }, {
+    "X-Harness-Hub-Token": "unit-token",
+  });
+  const payload = JSON.parse(response.body);
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.agent.id, "builder-1");
+  assert.equal(payload.agent.pty_id, "pty-new");
+  assert.equal(payload.event.type, "agent_reactivated");
 });
