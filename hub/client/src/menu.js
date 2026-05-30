@@ -137,10 +137,10 @@ export class GameMenu {
   }
 
   onClick(e) {
-    const theme = e.target.closest("[data-theme]");
+    const theme = e.target.closest(".theme-card[data-theme]");
     if (theme) {
       this.selectedTheme = theme.dataset.theme;
-      this.root.querySelectorAll("[data-theme]").forEach((el) => { el.setAttribute("aria-pressed", String(el.dataset.theme === this.selectedTheme)); });
+      this.root.querySelectorAll(".theme-card[data-theme]").forEach((el) => { el.setAttribute("aria-pressed", String(el.dataset.theme === this.selectedTheme)); });
       this.handlers.onTheme?.(this.selectedTheme);
       return;
     }
