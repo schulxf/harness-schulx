@@ -68,8 +68,30 @@ test("served index injects the local hub token for same-origin browser actions",
   const response = await get(port, "/");
 
   assert.equal(response.status, 200);
+  assert.match(response.body, /Harness — Acompanhamento/);
   assert.match(response.body, /window\.HARNESS_HUB_TOKEN="unit-token"/);
   assert.equal(response.headers["cache-control"], "no-store");
+
+  const presentationResponse = await get(port, "/presentation.js");
+  assert.equal(presentationResponse.status, 200);
+  assert.match(presentationResponse.headers["content-type"], /text\/javascript/);
+});
+
+test("world endpoint returns non-technical presentation data", async (t) => {
+  const { server } = createServer({
+    repo: makeControlRepo(),
+    watchRepos: [],
+    token: "unit-token",
+  });
+  t.after(() => server.close());
+
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  const response = await get(port, "/api/world");
+  const payload = JSON.parse(response.body);
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.repos[0].presentation.implementation, "Acompanhamento da implementação");
 });
 
 test("repo files endpoint requires token and lists registered repo files", async (t) => {

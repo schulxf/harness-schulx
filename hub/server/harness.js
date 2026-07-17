@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
+const presentation = require("./presentation");
 
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
 const HARNESS_DIR = ".harness";
@@ -407,17 +408,32 @@ function collectRepoState(repoRoot, index, ptyManager) {
     events: [],
   };
   if (!fs.existsSync(repoRoot) || !fs.statSync(repoRoot).isDirectory()) {
-    return { ...base, error: "repo_missing", phase: "offline" };
+    return {
+      ...base,
+      error: "repo_missing",
+      phase: "offline",
+      presentation: presentation.unavailablePresentation(base.project, "repo_missing"),
+    };
   }
   const configPath = path.join(harnessRoot(repoRoot), "config.json");
   if (!fs.existsSync(configPath)) {
-    return { ...base, error: "harness_not_initialized", phase: "offline" };
+    return {
+      ...base,
+      error: "harness_not_initialized",
+      phase: "offline",
+      presentation: presentation.unavailablePresentation(base.project, "harness_not_initialized"),
+    };
   }
   const config = loadRepoConfig(repoRoot);
   const tasks = arrayFromPayload(readJson(path.join(harnessRoot(repoRoot), "tasks", "index.json"), { tasks: [] }), ["tasks"]);
   const queue = arrayFromPayload(readJson(path.join(harnessRoot(repoRoot), "queue", "index.json"), { queue: [] }), ["queue", "items"]);
   const agents = decorateAgents(repoRoot, loadAgents(repoRoot), ptyManager);
   const hubConfig = mergeHubConfig(config);
+  const events = readJsonlTail(path.join(harnessRoot(repoRoot), "events.jsonl"), 30);
+  const security = readJson(path.join(harnessRoot(repoRoot), "security", "scan-latest.json"), {});
+  const projectPresentation = presentation.buildProjectPresentation(repoRoot, config, tasks, queue, events, security);
+  const activeTaskId = String((projectPresentation.current && projectPresentation.current.id) || "");
+  const activeTask = tasks.find((task) => String(task.task_id || "") === activeTaskId) || null;
   return {
     ...base,
     project: String(config.project_name || path.basename(repoRoot)),
@@ -435,12 +451,17 @@ function collectRepoState(repoRoot, index, ptyManager) {
       tasks: tasks.length,
       queued: queue.filter((item) => String(item.status || "") === "queued").length,
       active: queue.filter((item) => String(item.status || "") === "active").length,
+      done: tasks.filter((task) => ["passed", "done"].includes(String(task.status || ""))).length,
       agents: agents.length,
+      security_findings: Array.isArray(security.findings) ? security.findings.length : 0,
     },
+    active_task: activeTask,
     tasks: tasks.slice(-10),
     queue: queue.slice(-10),
+    security,
     agents,
-    events: readJsonlTail(path.join(harnessRoot(repoRoot), "events.jsonl"), 30),
+    events,
+    presentation: projectPresentation,
   };
 }
 
