@@ -61,7 +61,7 @@ terminal.
 Core v0.3 surfaces:
 
 - local dashboard for queue, active run, sensors, checkpoints and artifacts;
-- pixel-art multi-repo hub for watching several Harness projects as one map;
+- multi-project accompaniment hub for understanding current work, progress and attention points at a glance;
 - task queue with one active implementation task per repo;
 - supervisor that starts runs, watches budgets, records checkpoints and blocks
   unsafe transitions;
@@ -375,13 +375,13 @@ media/
 Large artifacts remain local by default. Reports may link to them without
 copying them into git.
 
-### Pixel-Art Multi-Repo Hub
+### Multi-Project Accompaniment Hub
 
-The hub is a local top-down operations map. Each watched repo becomes a room,
-and active work appears as a pixel agent character with a speech bubble. Click
-the agent to inspect the current task, state, run, checkpoint, queue and recent
-task history. A working agent bobs in place near the workstation; an idle agent
-walks around the room.
+The hub is a calm, non-technical view of work happening across local Harness
+projects. Each project card explains the current implementation, the active
+task, its factual position in the plan, what is happening now and whether human
+attention is needed. Open a card to follow the full task journey, completed
+results and recent updates without exposing commands, logs or file details.
 
 Register repos once:
 
@@ -414,8 +414,8 @@ http://127.0.0.1:8899/
 ```
 
 `hub-serve` recalculates `hub-state.json` from each repo's `.harness/` whenever
-the browser polls it, so the map updates as tasks move through queue, build,
-review, security and report states.
+the browser polls it. The selected project remains open while the interface
+updates task progress, review states and attention messages.
 
 Harness actions also write a shared event stream:
 
@@ -685,7 +685,7 @@ status               Show project state
 telegram             Telegram integration commands
 ```
 
-v0.3 command families also include dashboard, pixel-art hub, queue, supervisor,
+v0.3 command families also include dashboard, multi-project hub, queue, supervisor,
 checkpoint, resume, github, profile, artifacts, memory, plugin and security
 operations. Some installations expose these through plugins while the core CLI
 remains local and deterministic.

@@ -334,26 +334,31 @@ def test_dashboard_hub_generation_for_multiple_repos(tmp_path):
     state_path = repo_a / ".harness" / "dashboard" / "hub" / "hub-state.json"
     css_path = repo_a / ".harness" / "dashboard" / "hub" / "hub.css"
     js_path = repo_a / ".harness" / "dashboard" / "hub" / "hub.js"
+    presentation_path = repo_a / ".harness" / "dashboard" / "hub" / "presentation.js"
     assert hub.is_file()
     assert state_path.is_file()
     assert css_path.is_file()
     assert js_path.is_file()
+    assert presentation_path.is_file()
     html = hub.read_text(encoding="utf-8")
     css = css_path.read_text(encoding="utf-8")
     js = js_path.read_text(encoding="utf-8")
     state = read_json(state_path)
-    assert "Harness Hub" in html
+    assert "Harness — Acompanhamento" in html
     assert 'href="hub.css"' in html
+    assert 'src="presentation.js"' in html
     assert 'src="hub.js"' in html
     assert 'id="hub-bootstrap"' in html
-    assert "room" in js
-    assert "agent-token" in js
-    assert "speech-bubble" in css
+    assert "renderOverview" in js
+    assert 'addEventListener("events", scheduleRefresh)' in js
+    assert "project-card" in css
+    assert "pixel" not in html.lower()
     assert state["repo_count"] == 2
     assert {repo["project"] for repo in state["repos"]} == {"test"}
     assert state["total_tasks"] == 2
     assert state["repos"][0]["agents"][0]["state"] in {"idle", "working"}
     assert state["repos"][0]["agents"][0]["speech"]
+    assert state["repos"][0]["presentation"]["implementation"]
 
 
 def test_event_stream_and_agent_registry_follow_run(tmp_path):

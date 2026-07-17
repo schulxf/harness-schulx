@@ -1,1 +1,1 @@
-"""Static assets for the Harness pixel hub."""
+"""Static assets for the Harness project accompaniment dashboard."""

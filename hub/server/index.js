@@ -443,7 +443,7 @@ function createServer(options) {
     controlRoot: options.repo,
     watchRepos: options.watchRepos,
     token: options.token,
-    clientRoot: path.resolve(__dirname, "..", "client"),
+    clientRoot: path.resolve(__dirname, "..", "..", "harness_core", "dashboard_hub_assets"),
     ptyManager,
   };
   const server = http.createServer((req, res) => {

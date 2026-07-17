@@ -1,5 +1,10 @@
 # Plano de Design — Hub Pixel-Art com Agentes Vivos
 
+> **Interface substituída.** A apresentação em jogo descrita neste documento
+> não é mais a interface ativa do Hub. Os contratos de servidor e gerenciamento
+> de agentes permanecem como contexto histórico. A direção atual está em
+> [`HARNESS_ACOMPANHAMENTO_UI.md`](HARNESS_ACOMPANHAMENTO_UI.md).
+
 > Documento de design/implementação para transformar o `dashboard hub` atual
 > (HTML+CSS gerado por `render_dashboard_hub_html`) em um jogo top-down pixel-art
 > onde cada repo é um mapa, agentes são personagens que andam até o setor da

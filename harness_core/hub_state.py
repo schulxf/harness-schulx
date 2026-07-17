@@ -22,6 +22,7 @@ from harness_core.hub_agents import (
     hub_agent_state_for_phase,
     hub_repo_phase,
 )
+from harness_core.hub_presentation import build_project_presentation, unavailable_presentation
 from harness_core.paths import config_path, dashboard_hub_root, normalize_path_key, security_root
 from harness_core.queue_state import load_queue, sorted_queue_items
 from harness_core.run_state import find_unevaluated_runs, latest_run_dir_or_none
@@ -64,6 +65,7 @@ def collect_hub_repo_state(root: Path, index: int = 0) -> dict[str, Any]:
             "tasks": [],
             "queue": [],
             "agents": [],
+            "presentation": unavailable_presentation(root.name, "repo_missing"),
         }
     if not config_path(root).exists():
         return {
@@ -75,6 +77,7 @@ def collect_hub_repo_state(root: Path, index: int = 0) -> dict[str, Any]:
             "tasks": [],
             "queue": [],
             "agents": [],
+            "presentation": unavailable_presentation(root.name, "harness_not_initialized"),
         }
     config = load_config(root)
     tasks = load_tasks(root)
@@ -115,6 +118,7 @@ def collect_hub_repo_state(root: Path, index: int = 0) -> dict[str, Any]:
         }
     ]
     events = read_recent_harness_events(root, limit=30)
+    presentation = build_project_presentation(root, config, tasks, queue, events, security_report)
     return {
         "index": index,
         "project": config.get("project_name") or root.name,
@@ -140,6 +144,7 @@ def collect_hub_repo_state(root: Path, index: int = 0) -> dict[str, Any]:
         "security": security_report,
         "agents": agents,
         "events": events,
+        "presentation": presentation,
     }
 
 
