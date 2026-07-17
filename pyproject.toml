@@ -1,3 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "harness-schulx"
+version = "0.3.0"
+description = "Local-first protocol for evidence-backed agent work"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+harness-schulx = "harness:main"
+
+[tool.setuptools]
+py-modules = ["harness"]
+package-dir = { "" = "bin" }
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]

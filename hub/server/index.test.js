@@ -94,6 +94,31 @@ test("world endpoint returns non-technical presentation data", async (t) => {
   assert.equal(payload.repos[0].presentation.implementation, "Acompanhamento da implementação");
 });
 
+test("repo management endpoints add, hide, show and remove paths without deleting folders", async (t) => {
+  const repo = makeControlRepo();
+  const watched = fs.mkdtempSync(path.join(os.tmpdir(), "harness-hub-managed-"));
+  const marker = path.join(watched, "preservar.txt");
+  fs.writeFileSync(marker, "preservar", "utf8");
+  const { server } = createServer({ repo, watchRepos: [], token: "unit-token" });
+  t.after(() => server.close());
+
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  const headers = { "X-Harness-Hub-Token": "unit-token" };
+
+  assert.equal((await post(port, "/api/repos/add", { path: watched }, headers)).status, 200);
+  assert.equal((await post(port, "/api/repos/hide", { path: watched }, headers)).status, 200);
+  let listing = JSON.parse((await get(port, "/api/repos", headers)).body);
+  assert.equal(listing.repos.find((entry) => entry.path === watched).hidden, true);
+
+  assert.equal((await post(port, "/api/repos/show", { path: watched }, headers)).status, 200);
+  listing = JSON.parse((await get(port, "/api/repos", headers)).body);
+  assert.equal(listing.repos.find((entry) => entry.path === watched).hidden, false);
+
+  assert.equal((await post(port, "/api/repos/remove", { path: watched }, headers)).status, 200);
+  assert.equal(fs.readFileSync(marker, "utf8"), "preservar");
+});
+
 test("repo files endpoint requires token and lists registered repo files", async (t) => {
   const repo = makeControlRepo();
   fs.mkdirSync(path.join(repo, "src"), { recursive: true });

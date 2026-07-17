@@ -150,7 +150,7 @@ def test_security_scan_detects_real_looking_secret_in_tracked_text_file(tmp_path
     subprocess.run(["git", "add", "safe.txt", "settings.py"], cwd=repo, check=True)
 
     with pytest.raises(SystemExit) as exc:
-        run(["--repo", str(repo), "security", "scan"])
+        run(["--repo", str(repo), "security", "scan", "--fail-on-findings"])
 
     assert exc.value.code == 1
     report = read_json(repo / ".harness" / "security" / "scan-latest.json")
@@ -350,8 +350,15 @@ def test_dashboard_hub_generation_for_multiple_repos(tmp_path):
     assert 'src="hub.js"' in html
     assert 'id="hub-bootstrap"' in html
     assert "renderOverview" in js
+    assert "Gerenciar projetos" in js
+    assert "/api/repos/add" in js
+    assert "/api/repos/hide" in js
+    assert "/api/repos/show" in js
+    assert "/api/repos/remove" in js
+    assert "A pasta e seus arquivos continuarão no computador" in js
     assert 'addEventListener("events", scheduleRefresh)' in js
     assert "project-card" in css
+    assert "project-manager" in css
     assert "pixel" not in html.lower()
     assert state["repo_count"] == 2
     assert {repo["project"] for repo in state["repos"]} == {"test"}
@@ -409,6 +416,26 @@ def test_dashboard_hub_repo_registry_and_manual_agent(tmp_path):
     watched_state = next(repo for repo in state["repos"] if repo["root"] == str(watched))
     assert watched_state["agents"][0]["id"] == "agent-a"
     assert watched_state["agents"][0]["speech"] == "Montando teste local."
+
+
+def test_dashboard_hub_can_hide_show_and_remove_repo_without_deleting_it(tmp_path):
+    (tmp_path / "control").mkdir()
+    (tmp_path / "watched").mkdir()
+    control = init_repo(tmp_path / "control")
+    watched = init_repo(tmp_path / "watched")
+    marker = watched / "preservar.txt"
+    marker.write_text("conteúdo do usuário", encoding="utf-8")
+
+    assert run(["--repo", str(control), "dashboard", "hub-add-repo", str(watched)]) == 0
+    assert run(["--repo", str(control), "dashboard", "hub-hide-repo", str(watched)]) == 0
+    args = type("Args", (), {"repo": str(control), "watch_repo": []})()
+    assert str(watched.resolve()) not in [str(path) for path in harness.hub_repo_paths(args)]
+
+    assert run(["--repo", str(control), "dashboard", "hub-show-repo", str(watched)]) == 0
+    assert str(watched.resolve()) in [str(path) for path in harness.hub_repo_paths(args)]
+
+    assert run(["--repo", str(control), "dashboard", "hub-remove-repo", str(watched)]) == 0
+    assert marker.read_text(encoding="utf-8") == "conteúdo do usuário"
 
 
 def test_dashboard_hub_configure_and_agent_sidecar_commands(tmp_path):

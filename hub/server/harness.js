@@ -136,15 +136,67 @@ function mergeHubConfig(config) {
   return merged;
 }
 
+function hubRepoRegistryPath(controlRoot) {
+  return path.join(harnessRoot(controlRoot), "dashboard", "hub", "repos.json");
+}
+
+function normalizeRepoPaths(values) {
+  const seen = new Set();
+  const repos = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    if (!String(value || "").trim()) continue;
+    const resolved = path.resolve(String(value));
+    const key = normalizePathKey(resolved);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    repos.push(resolved);
+  }
+  return repos;
+}
+
+function loadHubRepoRegistryState(controlRoot) {
+  const registryPath = hubRepoRegistryPath(controlRoot);
+  const exists = fs.existsSync(registryPath);
+  const payload = readJson(registryPath, { repos: [], hidden_repos: [] });
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { exists, repos: [], hidden_repos: [] };
+  }
+  return {
+    exists,
+    repos: normalizeRepoPaths(arrayFromPayload(payload, ["repos"])),
+    hidden_repos: normalizeRepoPaths(arrayFromPayload(payload, ["hidden_repos"])),
+  };
+}
+
+function saveHubRepoRegistryState(controlRoot, state) {
+  const repos = normalizeRepoPaths(state.repos);
+  const repoKeys = new Set(repos.map(normalizePathKey));
+  const hidden = normalizeRepoPaths(state.hidden_repos).filter((entry) => repoKeys.has(normalizePathKey(entry)));
+  writeJsonAtomic(hubRepoRegistryPath(controlRoot), {
+    repos,
+    hidden_repos: hidden,
+    updated_at: utcNow(),
+  });
+}
+
+function listHubRepos(controlRoot) {
+  const state = loadHubRepoRegistryState(controlRoot);
+  const hiddenKeys = new Set(state.hidden_repos.map(normalizePathKey));
+  return state.repos.map((repoPath) => ({
+    path: repoPath,
+    hidden: hiddenKeys.has(normalizePathKey(repoPath)),
+  }));
+}
+
 function loadHubRepoRegistry(controlRoot) {
-  const payload = readJson(path.join(harnessRoot(controlRoot), "dashboard", "hub", "repos.json"), { repos: [] });
-  return arrayFromPayload(payload, ["repos"]).map(String).filter(Boolean);
+  return listHubRepos(controlRoot).filter((entry) => !entry.hidden).map((entry) => entry.path);
 }
 
 function resolveRepoPaths(controlRoot, watchRepos) {
   const explicit = Array.isArray(watchRepos) ? watchRepos.filter(Boolean) : [];
+  const state = loadHubRepoRegistryState(controlRoot);
   const raw = explicit.length > 0 ? explicit : loadHubRepoRegistry(controlRoot);
-  const candidates = raw.length > 0 ? raw : [controlRoot];
+  const candidates = explicit.length > 0 || state.exists ? raw : [controlRoot];
   const seen = new Set();
   const repos = [];
   for (const candidate of candidates) {
@@ -787,11 +839,35 @@ async function addRepo(controlRoot, repoPath) {
   if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
     throw new HttpError(400, "repo_path_missing");
   }
-  if (!fs.existsSync(path.join(harnessRoot(resolved), "config.json"))) {
-    await runHarnessCli(resolved, ["init", "--name", path.basename(resolved)]);
-  }
-  await runHarnessCli(controlRoot, ["dashboard", "hub-add-repo", resolved]);
+  const state = loadHubRepoRegistryState(controlRoot);
+  if (!state.exists && fs.existsSync(controlRoot)) state.repos.push(path.resolve(controlRoot));
+  const key = normalizePathKey(resolved);
+  if (!state.repos.some((entry) => normalizePathKey(entry) === key)) state.repos.push(resolved);
+  state.hidden_repos = state.hidden_repos.filter((entry) => normalizePathKey(entry) !== key);
+  saveHubRepoRegistryState(controlRoot, state);
   return loadHubRepoRegistry(controlRoot);
+}
+
+function setRepoHidden(controlRoot, repoPath, hidden) {
+  const resolved = path.resolve(String(repoPath || ""));
+  const key = normalizePathKey(resolved);
+  const state = loadHubRepoRegistryState(controlRoot);
+  if (!state.repos.some((entry) => normalizePathKey(entry) === key)) {
+    throw new HttpError(404, "repo_not_registered");
+  }
+  state.hidden_repos = state.hidden_repos.filter((entry) => normalizePathKey(entry) !== key);
+  if (hidden) state.hidden_repos.push(resolved);
+  saveHubRepoRegistryState(controlRoot, state);
+  return listHubRepos(controlRoot);
+}
+
+function removeRepo(controlRoot, repoPath) {
+  const key = normalizePathKey(path.resolve(String(repoPath || "")));
+  const state = loadHubRepoRegistryState(controlRoot);
+  state.repos = state.repos.filter((entry) => normalizePathKey(entry) !== key);
+  state.hidden_repos = state.hidden_repos.filter((entry) => normalizePathKey(entry) !== key);
+  saveHubRepoRegistryState(controlRoot, state);
+  return listHubRepos(controlRoot);
 }
 
 function setRemoteExecution(repoRoot, enabled) {
@@ -844,10 +920,13 @@ module.exports = {
   listRepoFiles,
   loadAgents,
   loadHubRepoRegistry,
+  listHubRepos,
   loadRepoConfig,
   makeAgentId,
   mergeHubConfig,
+  removeRepo,
   normalizeCliDefinition,
+  setRepoHidden,
   normalizePathKey,
   readNewEventsForRepos,
   reactivateAgent,

@@ -37,6 +37,9 @@ SKILL_REQUIRED_COMMANDS = [
     ("dashboard", "hub"),
     ("dashboard", "hub-serve"),
     ("dashboard", "hub-add-repo"),
+    ("dashboard", "hub-hide-repo"),
+    ("dashboard", "hub-show-repo"),
+    ("dashboard", "hub-remove-repo"),
     ("dashboard", "hub-list-repos"),
     ("agent", "register"),
     ("agent", "heartbeat"),
@@ -59,4 +62,3 @@ def compatibility_manifest() -> dict[str, object]:
         "entrypoints": PUBLIC_ENTRYPOINTS,
         "required_commands": [" ".join(command) for command in SKILL_REQUIRED_COMMANDS],
     }
-

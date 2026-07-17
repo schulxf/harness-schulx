@@ -38,6 +38,12 @@ const uiState = {
   refreshing: false,
   connection: hasBootstrapProjects ? "active" : "demo",
   returnFocusId: "",
+  managementOpen: false,
+  managementLoading: false,
+  managementBusyPath: "",
+  managedRepos: [],
+  managementMessage: null,
+  removeCandidate: "",
 };
 
 function escapeHtml(value) {
@@ -105,6 +111,12 @@ function icon(name, className = "") {
     alert: '<path d="M12 3 2.8 20h18.4L12 3Z"/><path d="M12 9v4M12 17h.01"/>',
     unavailable: '<circle cx="12" cy="12" r="9"/><path d="m5.7 5.7 12.6 12.6"/>',
     chevron: '<path d="m6 9 6 6 6-6"/>',
+    folderPlus: '<path d="M3 7.5h6l2 2h10v9.5H3z"/><path d="M15 12v4M13 14h4"/>',
+    eye: '<path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/>',
+    eyeOff: '<path d="m3 3 18 18"/><path d="M10.6 6.1A10.7 10.7 0 0 1 12 6c6 0 9.5 6 9.5 6a17 17 0 0 1-2.2 2.8M6.4 6.4C3.8 8.1 2.5 12 2.5 12s3.5 6 9.5 6c1 0 2-.2 2.8-.5"/>',
+    trash: '<path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/>',
+    close: '<path d="m6 6 12 12M18 6 6 18"/>',
+    plus: '<path d="M12 5v14M5 12h14"/>',
   };
   return `<svg class="icon ${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || paths.list}</svg>`;
 }
@@ -121,8 +133,9 @@ function timestamp(value, prefix = "Atualizado ") {
 
 function renderHeader() {
   const activeText = uiState.connection === "error" ? "Acompanhamento temporariamente indisponível" : "Acompanhamento ativo";
+  const modalAttributes = uiState.managementOpen ? ' inert aria-hidden="true"' : "";
   return `
-    <header class="topbar">
+    <header class="topbar"${modalAttributes}>
       <div class="brand-block" aria-label="Harness — Acompanhamento">
         <span class="brand-mark">${icon("brand")}</span>
         <div class="brand-copy">
@@ -135,10 +148,16 @@ function renderHeader() {
           <span>Última atualização</span>
           <strong><time id="panelClock" datetime="${new Date(uiState.lastFetchAt).toISOString()}">${formatClock(uiState.lastFetchAt)}</time> · <span id="panelRelative">${relativeTime(uiState.lastFetchAt)}</span></strong>
         </div>
-        <button class="button button--secondary" id="refreshButton" type="button" ${uiState.refreshing ? "disabled" : ""}>
-          ${icon("refresh", uiState.refreshing ? "icon--spin" : "")}
-          <span>${uiState.refreshing ? "Atualizando…" : "Atualizar agora"}</span>
-        </button>
+        <div class="header-buttons">
+          <button class="button button--secondary" id="manageProjectsButton" type="button">
+            ${icon("folderPlus")}
+            <span>Gerenciar projetos</span>
+          </button>
+          <button class="button button--secondary" id="refreshButton" type="button" ${uiState.refreshing ? "disabled" : ""}>
+            ${icon("refresh", uiState.refreshing ? "icon--spin" : "")}
+            <span>${uiState.refreshing ? "Atualizando…" : "Atualizar agora"}</span>
+          </button>
+        </div>
       </div>
     </header>`;
 }
@@ -242,7 +261,7 @@ function renderOverview() {
   const active = filterList.find((item) => item.key === uiState.filter) || filterList[0];
   const visible = projects.filter(active.match);
   return `
-    <main id="conteudo-principal" class="main-content" tabindex="-1">
+    <main id="conteudo-principal" class="main-content" tabindex="-1"${uiState.managementOpen ? ' inert aria-hidden="true"' : ""}>
       <h1 class="sr-only">Visão geral dos projetos acompanhados</h1>
       <section class="stats-grid" aria-label="Resumo dos projetos">
         ${projectStats(projects).map((item) => `
@@ -396,7 +415,7 @@ function unavailableDetail(project) {
 
 function missingProjectDetail() {
   return `
-    <main id="conteudo-principal" class="main-content" tabindex="-1">
+    <main id="conteudo-principal" class="main-content" tabindex="-1"${uiState.managementOpen ? ' inert aria-hidden="true"' : ""}>
       <a class="back-link" href="#">${icon("arrowLeft")}Voltar para todos os projetos</a>
       <section class="panel unavailable-detail">
         <span class="unavailable-icon">${icon("unavailable")}</span>
@@ -411,7 +430,7 @@ function renderDetail(project) {
   const notice = callout(project);
   const unavailable = project.status === "indisponivel";
   return `
-    <main id="conteudo-principal" class="main-content detail-page" tabindex="-1">
+    <main id="conteudo-principal" class="main-content detail-page" tabindex="-1"${uiState.managementOpen ? ' inert aria-hidden="true"' : ""}>
       <a class="back-link" href="#" data-back>${icon("arrowLeft")}Voltar para todos os projetos</a>
       <header class="detail-header">
         <div class="detail-heading-copy">
@@ -440,11 +459,98 @@ function renderDetail(project) {
     </main>`;
 }
 
+function managedRepoStatus(repo) {
+  if (!repo.available) return "Pasta não encontrada neste computador";
+  if (!repo.configured) return "Ainda sem informações de acompanhamento";
+  if (repo.hidden) return "Oculta da visão geral";
+  return "Visível na visão geral";
+}
+
+function renderManagedRepo(repo) {
+  const isBusy = uiState.managementBusyPath === repo.path;
+  const isConfirming = uiState.removeCandidate === repo.path;
+  return `
+    <li class="managed-repo" data-state="${repo.hidden ? "hidden" : repo.available ? "visible" : "missing"}">
+      <div class="managed-repo-copy">
+        <strong>${escapeHtml(repo.name || repo.path)}</strong>
+        <span class="managed-repo-path">${escapeHtml(repo.path)}</span>
+        <span class="managed-repo-status">${escapeHtml(managedRepoStatus(repo))}</span>
+      </div>
+      ${isConfirming ? `
+        <div class="remove-confirmation" role="group" aria-label="Confirmar remoção de ${escapeHtml(repo.name || repo.path)}">
+          <p>A pasta e seus arquivos continuarão no computador. Somente o acompanhamento será removido.</p>
+          <div class="managed-repo-actions">
+            <button class="button button--quiet" type="button" data-cancel-remove>Cancelar</button>
+            <button class="button button--danger" type="button" data-confirm-remove data-path="${escapeHtml(repo.path)}">Remover do painel</button>
+          </div>
+        </div>` : `
+        <div class="managed-repo-actions">
+          <button class="button button--quiet" type="button" data-repo-action="${repo.hidden ? "show" : "hide"}" data-path="${escapeHtml(repo.path)}" ${isBusy ? "disabled" : ""}>
+            ${icon(repo.hidden ? "eye" : "eyeOff")}
+            <span>${repo.hidden ? "Mostrar novamente" : "Ocultar"}</span>
+          </button>
+          <button class="button button--quiet button--remove" type="button" data-request-remove data-path="${escapeHtml(repo.path)}" ${isBusy ? "disabled" : ""} aria-label="Remover ${escapeHtml(repo.name || repo.path)} do painel">
+            ${icon("trash")}
+            <span>Remover</span>
+          </button>
+        </div>`}
+    </li>`;
+}
+
+function renderProjectManager() {
+  if (!uiState.managementOpen) return "";
+  const count = uiState.managedRepos.length;
+  const message = uiState.managementMessage;
+  return `
+    <div class="project-manager-layer" id="projectManagerLayer">
+      <button class="project-manager-backdrop" type="button" data-manager-close aria-label="Fechar gerenciamento de projetos"></button>
+      <section class="project-manager" id="projectManager" role="dialog" aria-modal="true" aria-labelledby="projectManagerTitle" aria-describedby="projectManagerDescription" tabindex="-1">
+        <header class="project-manager-header">
+          <div>
+            <span class="section-kicker">Pastas locais</span>
+            <h2 id="projectManagerTitle">Gerenciar projetos</h2>
+            <p id="projectManagerDescription">Escolha quais pastas aparecem no acompanhamento.</p>
+          </div>
+          <button class="icon-button" type="button" data-manager-close aria-label="Fechar">${icon("close")}</button>
+        </header>
+
+        <form class="add-path-form" id="addRepoForm">
+          <label for="repoPath">Adicionar uma pasta</label>
+          <div class="add-path-row">
+            <input id="repoPath" name="path" type="text" autocomplete="off" spellcheck="false" placeholder="Ex.: D:\\Sync\\meu-projeto" required>
+            <button class="button button--primary" type="submit" ${uiState.managementLoading || uiState.managementBusyPath === "__adding__" ? "disabled" : ""}>
+              ${icon("plus")}
+              <span>Adicionar</span>
+            </button>
+          </div>
+          <p class="field-help">Informe o caminho completo de uma pasta que já existe neste computador.</p>
+        </form>
+
+        ${message ? `<p class="manager-message" data-tone="${escapeHtml(message.tone || "neutral")}" role="status">${escapeHtml(message.text)}</p>` : ""}
+
+        <div class="managed-list-heading">
+          <h3>Pastas acompanhadas</h3>
+          <span>${count} ${count === 1 ? "pasta" : "pastas"}</span>
+        </div>
+        <div class="managed-list-scroll">
+          ${uiState.managementLoading && !count ? '<p class="manager-empty">Carregando as pastas…</p>' : ""}
+          ${!uiState.managementLoading && !count ? '<p class="manager-empty">Nenhuma pasta foi adicionada ainda.</p>' : ""}
+          ${count ? `<ul class="managed-repo-list">${uiState.managedRepos.map(renderManagedRepo).join("")}</ul>` : ""}
+        </div>
+
+        <footer class="project-manager-footer">
+          Ocultar ou remover afeta somente este painel. Nenhuma pasta ou arquivo será apagado.
+        </footer>
+      </section>
+    </div>`;
+}
+
 function render(options = {}) {
   const selected = uiState.selectedId
     ? dashboard.projects.find((project) => project.id === uiState.selectedId)
     : null;
-  app.innerHTML = `${renderHeader()}${uiState.selectedId ? renderDetail(selected) : renderOverview()}`;
+  app.innerHTML = `${renderHeader()}${uiState.selectedId ? renderDetail(selected) : renderOverview()}${renderProjectManager()}`;
+  document.body.classList.toggle("has-open-manager", uiState.managementOpen);
   updateTimeLabels();
   if (options.focusSelector) {
     requestAnimationFrame(() => document.querySelector(options.focusSelector)?.focus());
@@ -468,13 +574,111 @@ function announce(message) {
   window.setTimeout(() => { announcer.textContent = message; }, 30);
 }
 
+async function requestJson(url, options = {}) {
+  const headers = { Accept: "application/json", ...(options.headers || {}) };
+  if (dashboard.actionToken) headers["X-Harness-Hub-Token"] = dashboard.actionToken;
+  if (options.body) headers["Content-Type"] = "application/json";
+  const response = await fetch(url, { cache: "no-store", ...options, headers });
+  let payload = {};
+  try {
+    payload = await response.json();
+  } catch (_error) {
+    payload = {};
+  }
+  if (!response.ok) {
+    throw new Error(payload.error || `Não foi possível concluir a ação (${response.status}).`);
+  }
+  return payload;
+}
+
 async function fetchJson(url) {
-  const response = await fetch(url, {
-    cache: "no-store",
-    headers: dashboard.actionToken ? { "X-Harness-Hub-Token": dashboard.actionToken } : {},
-  });
-  if (!response.ok) throw new Error(`Falha ao atualizar (${response.status})`);
-  return response.json();
+  return requestJson(url);
+}
+
+function normalizeManagedRepos(payload) {
+  return (Array.isArray(payload?.repos) ? payload.repos : []).map((repo) => ({
+    path: String(repo.path || ""),
+    name: String(repo.name || String(repo.path || "").split(/[\\/]/).filter(Boolean).pop() || repo.path || "Pasta"),
+    hidden: Boolean(repo.hidden),
+    available: repo.available !== false,
+    configured: repo.configured !== false,
+  })).filter((repo) => repo.path);
+}
+
+async function openProjectManager() {
+  uiState.managementOpen = true;
+  uiState.managementLoading = true;
+  uiState.managementMessage = null;
+  uiState.removeCandidate = "";
+  render({ focusSelector: "#projectManager" });
+  if (!/^https?:$/.test(window.location.protocol)) {
+    uiState.managementLoading = false;
+    uiState.managementMessage = {
+      tone: "attention",
+      text: "O gerenciamento de pastas fica disponível quando a interface é aberta pelo atalho do Harness.",
+    };
+    render({ focusSelector: "[data-manager-close]" });
+    return;
+  }
+  try {
+    const payload = await requestJson("/api/repos");
+    uiState.managedRepos = normalizeManagedRepos(payload);
+    uiState.managementLoading = false;
+    render({ focusSelector: "#repoPath" });
+  } catch (error) {
+    uiState.managementLoading = false;
+    uiState.managementMessage = {
+      tone: "attention",
+      text: error.message || "Não foi possível carregar as pastas acompanhadas.",
+    };
+    render({ focusSelector: "[data-manager-close]" });
+  }
+}
+
+function closeProjectManager() {
+  uiState.managementOpen = false;
+  uiState.managementLoading = false;
+  uiState.managementBusyPath = "";
+  uiState.removeCandidate = "";
+  render({ focusSelector: "#manageProjectsButton" });
+}
+
+async function changeManagedRepo(action, path) {
+  const endpoints = {
+    add: "/api/repos/add",
+    hide: "/api/repos/hide",
+    show: "/api/repos/show",
+    remove: "/api/repos/remove",
+  };
+  const actionLabels = {
+    add: "Pasta adicionada ao acompanhamento.",
+    hide: "Pasta ocultada da visão geral.",
+    show: "Pasta mostrada novamente na visão geral.",
+    remove: "Pasta removida do painel. Os arquivos foram preservados.",
+  };
+  uiState.managementBusyPath = action === "add" ? "__adding__" : path;
+  uiState.managementMessage = null;
+  render({ focusSelector: "#projectManager" });
+  try {
+    const payload = await requestJson(endpoints[action], {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    });
+    uiState.managedRepos = normalizeManagedRepos(payload);
+    uiState.managementMessage = { tone: "success", text: actionLabels[action] };
+    uiState.removeCandidate = "";
+    uiState.managementBusyPath = "";
+    await refresh({ silent: true });
+    render({ focusSelector: action === "add" ? "#repoPath" : "#projectManager" });
+    announce(actionLabels[action]);
+  } catch (error) {
+    uiState.managementBusyPath = "";
+    uiState.managementMessage = {
+      tone: "attention",
+      text: error.message || "Não foi possível atualizar esta pasta.",
+    };
+    render({ focusSelector: action === "add" ? "#repoPath" : "#projectManager" });
+  }
 }
 
 async function fetchSnapshot() {
@@ -558,6 +762,35 @@ function startRealtime() {
 }
 
 app.addEventListener("click", (event) => {
+  if (event.target.closest("#manageProjectsButton")) {
+    openProjectManager();
+    return;
+  }
+  if (event.target.closest("[data-manager-close]")) {
+    closeProjectManager();
+    return;
+  }
+  const repoAction = event.target.closest("[data-repo-action]");
+  if (repoAction) {
+    changeManagedRepo(repoAction.dataset.repoAction, repoAction.dataset.path || "");
+    return;
+  }
+  const requestRemove = event.target.closest("[data-request-remove]");
+  if (requestRemove) {
+    uiState.removeCandidate = requestRemove.dataset.path || "";
+    render({ focusSelector: "[data-cancel-remove]" });
+    return;
+  }
+  if (event.target.closest("[data-cancel-remove]")) {
+    uiState.removeCandidate = "";
+    render({ focusSelector: "#projectManager" });
+    return;
+  }
+  const confirmRemove = event.target.closest("[data-confirm-remove]");
+  if (confirmRemove) {
+    changeManagedRepo("remove", confirmRemove.dataset.path || "");
+    return;
+  }
   const filterButton = event.target.closest("[data-filter]");
   if (filterButton) {
     uiState.filter = filterButton.dataset.filter || "todos";
@@ -578,6 +811,39 @@ app.addEventListener("click", (event) => {
   }
   const back = event.target.closest("[data-back]");
   if (back) uiState.returnFocusId = uiState.selectedId;
+});
+
+app.addEventListener("submit", (event) => {
+  if (event.target.id !== "addRepoForm") return;
+  event.preventDefault();
+  const form = new FormData(event.target);
+  const path = String(form.get("path") || "").trim();
+  if (!path) return;
+  changeManagedRepo("add", path);
+});
+
+document.addEventListener("keydown", (event) => {
+  if (!uiState.managementOpen) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeProjectManager();
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const modal = document.getElementById("projectManager");
+  if (!modal) return;
+  const focusable = [...modal.querySelectorAll('button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+    .filter((element) => !element.hasAttribute("hidden"));
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
 });
 
 window.addEventListener("hashchange", () => {

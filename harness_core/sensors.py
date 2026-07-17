@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import shlex
 import shutil
@@ -11,6 +13,41 @@ from typing import Any
 from harness_core.storage import read_json
 
 SENSOR_TIERS = ["smoke", "affected", "full"]
+
+
+def sensor_plan_digest(tier: str, commands: list[str], allow_shell: bool = False) -> str:
+    plan = {
+        "tier": tier,
+        "commands": [str(command).strip() for command in commands],
+        "allow_shell": bool(allow_shell),
+    }
+    encoded = json.dumps(plan, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def make_sensor_review(sensor_tiers: dict[str, list[str]]) -> dict[str, Any]:
+    from harness_core.clock import utc_now
+
+    all_commands: list[str] = []
+    for tier in SENSOR_TIERS:
+        for command in sensor_tiers.get(tier, []):
+            if command not in all_commands:
+                all_commands.append(command)
+    tier_digests = {
+        tier: sensor_plan_digest(tier, sensor_tiers.get(tier, [])) for tier in SENSOR_TIERS
+    }
+    tier_digests["all"] = sensor_plan_digest("all", all_commands)
+    configuration = json.dumps(
+        {tier: sensor_tiers.get(tier, []) for tier in SENSOR_TIERS},
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return {
+        "digest": hashlib.sha256(configuration.encode()).hexdigest(),
+        "tier_digests": tier_digests,
+        "reviewed_at": utc_now(),
+    }
 
 
 def detect_default_sensors(root: Path) -> list[str]:

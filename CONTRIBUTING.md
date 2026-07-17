@@ -6,7 +6,8 @@ runtime dependencies.
 ## Development Setup
 
 ```powershell
-python -m pip install pytest
+python -m pip install -r requirements-dev.txt
+python -m ruff check .
 python -m pytest tests/
 ```
 
@@ -20,7 +21,8 @@ python -m pytest tests/
 ## Test Commands
 
 ```powershell
-python -m py_compile bin\harness.py
+python -m ruff check .
+python -m compileall -q bin .github\scripts tests
 python -m pytest tests/
 ```
 
@@ -32,3 +34,7 @@ python -m pytest tests/
 - Do not auto-approve tasks.
 - Do not make the implementer self-approve.
 - Keep P0/P1 fixes inside the same task.
+- Review spelling, accentuation and clarity of PT-BR text before marking the PR
+  checklist.
+- Explain each PR in plain language so a reader does not need implementation
+  jargon to understand what changed.

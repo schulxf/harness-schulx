@@ -77,6 +77,10 @@ def default_config(root: Path, *, project_name: str, sensors: list[str], runner_
             "context_preflight_required_before_start": True,
             "record_evidence_before_done": True,
             "cache_context_preflight": True,
+            "security_scan_required_before_done": True,
+            "ptbr_review_required_before_done": True,
+            "review_evidence_required_before_done": True,
+            "budget_required_before_done": True,
         },
     }
 

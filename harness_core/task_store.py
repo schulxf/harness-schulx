@@ -9,7 +9,7 @@ from typing import Any
 from harness_core.clock import utc_now
 from harness_core.paths import tasks_index_path
 from harness_core.records import TaskRecord
-from harness_core.storage import read_json, write_json
+from harness_core.storage import read_json, state_lock, write_json
 
 
 def load_tasks(root: Path) -> list[TaskRecord]:
@@ -28,19 +28,24 @@ def find_task(root: Path, task_id: str) -> TaskRecord:
 
 
 def update_task(root: Path, task_id: str, **updates: Any) -> None:
-    tasks = load_tasks(root)
-    for task in tasks:
-        if task["task_id"] == task_id:
-            task.update(updates)
-            task["updated_at"] = utc_now()
-            save_tasks(root, tasks)
-            return
+    with state_lock(root, "tasks"):
+        tasks = load_tasks(root)
+        for task in tasks:
+            if task["task_id"] == task_id:
+                task.update(updates)
+                task["updated_at"] = utc_now()
+                save_tasks(root, tasks)
+                return
     raise SystemExit(f"Task nao encontrada: {task_id}")
 
 
 def next_task_id(root: Path) -> str:
+    return next_task_id_from(load_tasks(root))
+
+
+def next_task_id_from(tasks: list[TaskRecord]) -> str:
     numbers = []
-    for task in load_tasks(root):
+    for task in tasks:
         match = re.match(r"TASK-(\d+)$", task["task_id"])
         if match:
             numbers.append(int(match.group(1)))

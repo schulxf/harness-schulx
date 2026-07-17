@@ -319,6 +319,15 @@ def test_blocking_findings_from_review_detects_p0_p1():
     assert [item["severity"] for item in blockers] == ["P0", "P1"]
 
 
+def test_review_parser_ignores_explicit_no_findings_but_keeps_real_negation():
+    text = (
+        "Achados bloqueantes: Nenhum P0/P1.\n"
+        "**[P1] logic - app.py:2** Nenhum tratamento para erro de leitura."
+    )
+    blockers = harness.blocking_findings_from_review(text, {})
+    assert [item["severity"] for item in blockers] == ["P1"]
+
+
 def test_render_evaluation_markdown_with_gaps():
     evaluation = {
         "task_id": "TASK-001",

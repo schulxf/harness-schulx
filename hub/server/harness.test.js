@@ -87,6 +87,29 @@ test("listRepoFiles returns useful files and skips generated state", () => {
   assert.equal(files.some((file) => file.startsWith("node_modules/")), false);
 });
 
+test("repo registry can hide, show and remove a path without touching its files", async () => {
+  const control = makeRepo();
+  const watched = fs.mkdtempSync(path.join(os.tmpdir(), "harness-hub-watched-"));
+  const marker = path.join(watched, "preservar.txt");
+  fs.writeFileSync(marker, "conteúdo do usuário", "utf8");
+
+  await harness.addRepo(control, watched);
+  harness.setRepoHidden(control, watched, true);
+
+  assert.deepEqual(harness.loadHubRepoRegistry(control), [control]);
+  assert.deepEqual(harness.listHubRepos(control).find((entry) => entry.path === watched), {
+    path: watched,
+    hidden: true,
+  });
+
+  harness.setRepoHidden(control, watched, false);
+  assert.ok(harness.loadHubRepoRegistry(control).includes(watched));
+
+  harness.removeRepo(control, watched);
+  assert.equal(fs.readFileSync(marker, "utf8"), "conteúdo do usuário");
+  assert.equal(harness.listHubRepos(control).some((entry) => entry.path === watched), false);
+});
+
 test("reactivateAgent starts a new PTY for an existing offline agent", () => {
   const repo = makeRepo();
   harness.augmentAgent(repo, "builder-1", {

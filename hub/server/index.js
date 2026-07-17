@@ -295,8 +295,30 @@ async function handleAddRepo(body, context) {
   if (!repoPath) {
     throw new harness.HttpError(400, "repo_path_required");
   }
-  const repos = await harness.addRepo(context.controlRoot, repoPath);
+  await harness.addRepo(context.controlRoot, repoPath);
+  return managedRepoListing(context.controlRoot);
+}
+
+function managedRepoListing(controlRoot) {
+  const repos = harness.listHubRepos(controlRoot).map((entry) => ({
+    ...entry,
+    name: path.basename(entry.path) || entry.path,
+    available: fs.existsSync(entry.path) && fs.statSync(entry.path).isDirectory(),
+    configured: fs.existsSync(path.join(entry.path, ".harness", "config.json")),
+  }));
   return { ok: true, repos };
+}
+
+function handleRepoVisibility(body, context, hidden) {
+  if (!body.path) throw new harness.HttpError(400, "repo_path_required");
+  harness.setRepoHidden(context.controlRoot, body.path, hidden);
+  return managedRepoListing(context.controlRoot);
+}
+
+function handleRemoveRepo(body, context) {
+  if (!body.path) throw new harness.HttpError(400, "repo_path_required");
+  harness.removeRepo(context.controlRoot, body.path);
+  return managedRepoListing(context.controlRoot);
 }
 
 async function handleCreateProject(body, context) {
@@ -379,6 +401,11 @@ async function routeRequest(req, res, context) {
     sendJson(res, 200, harness.collectWorld(context));
     return;
   }
+  if (req.method === "GET" && urlObject.pathname === "/api/repos") {
+    if (!mutableAuthorized(req, res, context.token, urlObject)) return;
+    sendJson(res, 200, managedRepoListing(context.controlRoot));
+    return;
+  }
   if (req.method === "GET" && urlObject.pathname === "/api/repo-files") {
     if (!mutableAuthorized(req, res, context.token, urlObject)) {
       return;
@@ -416,6 +443,18 @@ async function routeRequest(req, res, context) {
     }
     if (urlObject.pathname === "/api/repos/add") {
       sendJson(res, 200, await handleAddRepo(body, context));
+      return;
+    }
+    if (urlObject.pathname === "/api/repos/hide") {
+      sendJson(res, 200, handleRepoVisibility(body, context, true));
+      return;
+    }
+    if (urlObject.pathname === "/api/repos/show") {
+      sendJson(res, 200, handleRepoVisibility(body, context, false));
+      return;
+    }
+    if (urlObject.pathname === "/api/repos/remove") {
+      sendJson(res, 200, handleRemoveRepo(body, context));
       return;
     }
     if (urlObject.pathname === "/api/projects/create") {

@@ -19,10 +19,36 @@ def render_evaluator_brief(root: Path, task: dict[str, Any], contract: dict[str,
     from .storage import read_json
 
     sensors = read_json(run_dir / "sensors.json", {"passed": False, "results": []})
+    security = read_json(run_dir / "security-scan.json", {})
+    ptbr_review = read_json(run_dir / "ptbr-review.json", {})
     preflight = check_context_preflight(root, task["task_id"])
+    run_meta = read_json(run_dir / "run.json", {})
+    base_commit = run_meta.get("base_commit")
     status = git_output(root, ["status", "--short"]) if is_git_repo(root) else "Nao e um repo git."
-    diff = git_output(root, ["diff", "--stat"]) if is_git_repo(root) else "Diff git indisponivel."
-    full_diff_hint = "Rode `git diff` no repo se precisar inspecionar arquivos em detalhe."
+    if is_git_repo(root) and base_commit:
+        diff = git_output(root, ["diff", "--stat", str(base_commit)])
+        changed_files = git_output(root, ["diff", "--name-status", str(base_commit)])
+        full_diff_hint = f"Para o diff completo desta run, use `git diff {base_commit}`."
+    elif is_git_repo(root):
+        diff = git_output(root, ["diff", "--stat"])
+        changed_files = git_output(root, ["diff", "--name-status"])
+        full_diff_hint = "Para o diff completo, use `git diff`."
+    else:
+        diff = "Diff git indisponivel."
+        changed_files = "Superficie alterada indisponivel."
+        full_diff_hint = ""
+    from .storage import write_json
+
+    write_json(
+        run_dir / "changed-surface.json",
+        {
+            "created_at": utc_now(),
+            "base_commit": base_commit,
+            "head_commit": git_output(root, ["rev-parse", "HEAD"]) if is_git_repo(root) else None,
+            "files": changed_files.splitlines() if changed_files else [],
+            "worktree_status": status.splitlines() if status else [],
+        },
+    )
     return (
         f"# Brief do avaliador - {task['task_id']}\n\n"
         "Avalie a implementacao contra o contrato. O implementador nao pode se autoaprovar.\n\n"
@@ -35,13 +61,21 @@ def render_evaluator_brief(root: Path, task: dict[str, Any], contract: dict[str,
         f"```json\n{json.dumps(contract, indent=2, ensure_ascii=False)}\n```\n\n"
         "## Evidencia dos sensores\n\n"
         f"```json\n{json.dumps(sensors, indent=2, ensure_ascii=False)}\n```\n\n"
+        "## Security scan da run\n\n"
+        f"```json\n{json.dumps(security, indent=2, ensure_ascii=False)}\n```\n\n"
+        "## Revisão PT-BR\n\n"
+        f"```json\n{json.dumps(ptbr_review, indent=2, ensure_ascii=False)}\n```\n\n"
         "## Preflight de contexto\n\n"
         f"```json\n{json.dumps(preflight, indent=2, ensure_ascii=False)}\n```\n\n"
         "## Memoria do projeto\n\n"
         f"{render_memory_context(root, task['task_id'])}\n\n"
         "## Status do Git\n\n"
         f"```text\n{status}\n```\n\n"
-        "## Estatistica do diff\n\n"
+        "## Baseline imutável da run\n\n"
+        f"Commit inicial: `{base_commit or 'indisponível'}`\n\n"
+        "## Superfície alterada desde o início da run\n\n"
+        f"```text\n{changed_files}\n```\n\n"
+        "## Estatística do diff\n\n"
         f"```text\n{diff}\n```\n\n"
         f"{full_diff_hint}\n"
     )
@@ -284,6 +318,8 @@ def extract_review_findings(text: str) -> list[dict[str, str]]:
     for line in text.splitlines():
         match = re.search(r"\bP([012])\b|\[P([012])\]", line, re.IGNORECASE)
         if not match:
+            continue
+        if re.search(r"\b(?:nenhum|sem)\b", line[: match.start()], re.IGNORECASE):
             continue
         severity = f"P{match.group(1) or match.group(2)}".upper()
         findings.append({"severity": severity, "text": plain_clean(line)})
