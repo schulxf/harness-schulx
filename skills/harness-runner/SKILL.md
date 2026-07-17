@@ -94,6 +94,7 @@ python <harness.py> --repo $APP_REPO --allow-main init
 - `start` e `supervisor tick|run --auto-start` registram automaticamente o repo no painel central.
 - `agent register --role builder|developer|implementer|coder` também registra o repo automaticamente.
 - Use `HARNESS_HUB_CONTROL_REPO` para apontar explicitamente o repo de controle do painel. No Windows, sem essa variável, o Harness procura `%LOCALAPPDATA%\HarnessAcompanhamento\control`.
+- Em automações isoladas que não podem alterar o painel local, use `HARNESS_HUB_CONTROL_REPO=disabled`.
 - O registro é idempotente: o mesmo caminho não é duplicado.
 - Um projeto ocultado pela pessoa usuária permanece oculto. Se tiver sido removido do painel, ele volta a ser adicionado na próxima ativação como implementador.
 - Falha de acesso ao painel gera um aviso claro, mas não apaga arquivos nem altera o escopo da task.

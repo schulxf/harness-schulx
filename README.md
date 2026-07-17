@@ -417,7 +417,8 @@ the central accompaniment panel automatically. Set `HARNESS_HUB_CONTROL_REPO`
 to the panel's control repository; on Windows the local installation is
 discovered at `%LOCALAPPDATA%\HarnessAcompanhamento\control`. Automatic
 registration never duplicates a path and never makes a deliberately hidden
-project visible again.
+project visible again. Set `HARNESS_HUB_CONTROL_REPO=disabled` in isolated
+automation that must not update the local panel.
 
 Generate a static hub:
 
