@@ -3,8 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from harness_core.hub_registry import (
+    HUB_CONTROL_REPO_ENV,
+    add_hub_repo,
+    discover_hub_control_repo,
     hub_repo_registry_entries,
     load_hub_repo_registry,
+    register_implementation_repo,
     remove_hub_repo,
     save_hub_repo_registry,
     set_hub_repo_hidden,
@@ -85,3 +89,50 @@ def test_save_registry_preserves_hidden_state_for_existing_repos(tmp_path: Path)
         "path": str(repo_b.resolve()),
         "hidden": True,
     }
+
+
+def test_discover_hub_control_repo_uses_explicit_or_windows_default_path(tmp_path: Path) -> None:
+    explicit = tmp_path / "explicit-control"
+    write_json(explicit / ".harness" / "config.json", {})
+    assert discover_hub_control_repo({HUB_CONTROL_REPO_ENV: str(explicit)}) == explicit.resolve()
+
+    local_app_data = tmp_path / "local-app-data"
+    default_control = local_app_data / "HarnessAcompanhamento" / "control"
+    write_json(default_control / ".harness" / "config.json", {})
+    assert discover_hub_control_repo({"LOCALAPPDATA": str(local_app_data)}) == default_control.resolve()
+
+    assert discover_hub_control_repo({HUB_CONTROL_REPO_ENV: ""}) is None
+
+
+def test_implementer_registration_preserves_hidden_choice_and_readds_removed_repo(tmp_path: Path) -> None:
+    control = tmp_path / "control"
+    repo = tmp_path / "projeto"
+    repo.mkdir()
+    write_json(control / ".harness" / "config.json", {})
+    environment = {HUB_CONTROL_REPO_ENV: str(control)}
+
+    first = register_implementation_repo(repo, environ=environment)
+    assert first["status"] == "added"
+    assert first["hidden"] is False
+
+    set_hub_repo_hidden(control, str(repo), hidden=True)
+    existing = register_implementation_repo(repo, environ=environment)
+    assert existing["status"] == "already_registered"
+    assert existing["hidden"] is True
+    assert load_hub_repo_registry(control) == []
+
+    remove_hub_repo(control, str(repo))
+    restored = register_implementation_repo(repo, environ=environment)
+    assert restored["status"] == "added"
+    assert restored["hidden"] is False
+    assert load_hub_repo_registry(control) == [str(repo.resolve())]
+
+
+def test_regular_add_still_shows_a_previously_hidden_repo(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    save_hub_repo_registry(tmp_path, [str(repo)])
+    set_hub_repo_hidden(tmp_path, str(repo), hidden=True)
+
+    assert add_hub_repo(tmp_path, str(repo)) is False
+    assert load_hub_repo_registry(tmp_path) == [str(repo.resolve())]

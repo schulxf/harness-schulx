@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import os
+from collections.abc import Mapping
 from pathlib import Path
 
 from harness_core.clock import utc_now
 from harness_core.paths import hub_repo_registry_path, normalize_path_key
 from harness_core.storage import read_json, state_lock, write_json
+
+HUB_CONTROL_REPO_ENV = "HARNESS_HUB_CONTROL_REPO"
 
 
 def _normalized_paths(repos: list[str]) -> list[str]:
@@ -73,7 +77,7 @@ def save_hub_repo_registry(root: Path, repos: list[str]) -> None:
     )
 
 
-def add_hub_repo(root: Path, repo: str) -> bool:
+def add_hub_repo(root: Path, repo: str, *, unhide: bool = True) -> bool:
     resolved = str(Path(repo).expanduser().resolve())
     key = normalize_path_key(Path(resolved))
     with state_lock(root, "hub-repos"):
@@ -83,16 +87,67 @@ def add_hub_repo(root: Path, repo: str) -> bool:
         added = key not in existing_keys
         if added:
             repos.append(resolved)
-        hidden_repos = [
-            item
-            for item in _normalized_paths([str(value) for value in payload["hidden_repos"]])
-            if normalize_path_key(Path(item)) != key
-        ]
+        hidden_repos = _normalized_paths([str(value) for value in payload["hidden_repos"]])
+        if added or unhide:
+            hidden_repos = [
+                item
+                for item in hidden_repos
+                if normalize_path_key(Path(item)) != key
+            ]
         write_json(
             hub_repo_registry_path(root),
             {"repos": repos, "hidden_repos": hidden_repos, "updated_at": utc_now()},
         )
     return added
+
+
+def discover_hub_control_repo(
+    environ: Mapping[str, str] | None = None,
+) -> Path | None:
+    values = os.environ if environ is None else environ
+    if HUB_CONTROL_REPO_ENV in values:
+        configured = str(values.get(HUB_CONTROL_REPO_ENV) or "").strip()
+        candidates = [Path(configured)] if configured else []
+    else:
+        local_app_data = str(values.get("LOCALAPPDATA") or "").strip()
+        candidates = (
+            [Path(local_app_data) / "HarnessAcompanhamento" / "control"]
+            if local_app_data
+            else []
+        )
+
+    for candidate in candidates:
+        resolved = candidate.expanduser().resolve()
+        if (resolved / ".harness" / "config.json").is_file():
+            return resolved
+    return None
+
+
+def register_implementation_repo(
+    root: Path,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    repo = root.expanduser().resolve()
+    control = discover_hub_control_repo(environ)
+    if control is None:
+        return {"status": "not_configured", "repo": str(repo), "control_repo": None}
+
+    added = add_hub_repo(control, str(repo), unhide=False)
+    entry = next(
+        (
+            item
+            for item in hub_repo_registry_entries(control)
+            if normalize_path_key(Path(str(item["path"]))) == normalize_path_key(repo)
+        ),
+        {"hidden": False},
+    )
+    return {
+        "status": "added" if added else "already_registered",
+        "repo": str(repo),
+        "control_repo": str(control),
+        "hidden": bool(entry.get("hidden")),
+    }
 
 
 def set_hub_repo_hidden(root: Path, repo: str, *, hidden: bool) -> None:

@@ -412,6 +412,13 @@ python $HARNESS --repo $APP_REPO dashboard hub-remove-repo "C:\repo-b"
 python $HARNESS --repo $APP_REPO dashboard hub-list-repos
 ```
 
+When an implementation starts, Harness also registers the target repository in
+the central accompaniment panel automatically. Set `HARNESS_HUB_CONTROL_REPO`
+to the panel's control repository; on Windows the local installation is
+discovered at `%LOCALAPPDATA%\HarnessAcompanhamento\control`. Automatic
+registration never duplicates a path and never makes a deliberately hidden
+project visible again.
+
 Generate a static hub:
 
 ```powershell

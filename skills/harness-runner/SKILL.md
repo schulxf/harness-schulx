@@ -67,25 +67,36 @@ python <harness.py> --repo $APP_REPO --allow-main init
 
 ## Fluxo Diario
 
-1. Se o repo alvo nao tiver `.harness/config.json`, rode `init`.
-2. Configure `required_context` em `.harness/config.json`.
-3. Ingira docs de contexto, PRD, arquitetura e ADR do repo alvo.
-4. Rode `preflight` para confirmar que o contexto obrigatorio foi ingerido e nao mudou.
-5. Importe ou crie uma task a partir de issue, queue item ou GitHub Issue.
-6. Coloque a task na queue com profile e budget quando essa superficie existir.
-7. Crie um contrato antes da implementacao.
-8. Inicie uma run pelo supervisor ou CLI e leia `builder-brief.md`.
-9. Implemente apenas essa task, preferencialmente usando `tdd`.
-10. Salve checkpoints depois de progresso relevante ou antes de pausar.
-11. Rode sensores revisados e preserve o resultado.
-12. Gere handoffs com `evaluate <task_id>`.
-13. Spawn um avaliador com `fork_context=false` usando apenas `evaluator-agent-handoff.md`.
-14. Spawn um reviewer Greptile-style com `fork_context=false` usando apenas `greptile-reviewer-agent-handoff.md`.
-15. Rode `security scan --task-id <task_id>` e preserve o relatório da run.
-16. Revise ortografia, acentuação e clareza em PT-BR e registre com `ptbr-review`.
-17. Consolide os sinais usando `review-consolidation.md`.
-18. Registre a decisão com `evaluate <task_id> --status ... --review-file ...`.
-19. Gere `report <task_id>` e alimente memória de projeto com o resumo aprovado.
+1. Ao assumir o papel de implementador, adicione imediatamente o caminho absoluto do repo alvo ao painel central de acompanhamento.
+2. Se o repo alvo nao tiver `.harness/config.json`, rode `init`.
+3. Configure `required_context` em `.harness/config.json`.
+4. Ingira docs de contexto, PRD, arquitetura e ADR do repo alvo.
+5. Rode `preflight` para confirmar que o contexto obrigatorio foi ingerido e nao mudou.
+6. Importe ou crie uma task a partir de issue, queue item ou GitHub Issue.
+7. Coloque a task na queue com profile e budget quando essa superficie existir.
+8. Crie um contrato antes da implementacao.
+9. Inicie uma run pelo supervisor ou CLI e leia `builder-brief.md`.
+10. Implemente apenas essa task, preferencialmente usando `tdd`.
+11. Salve checkpoints depois de progresso relevante ou antes de pausar.
+12. Rode sensores revisados e preserve o resultado.
+13. Gere handoffs com `evaluate <task_id>`.
+14. Spawn um avaliador com `fork_context=false` usando apenas `evaluator-agent-handoff.md`.
+15. Spawn um reviewer Greptile-style com `fork_context=false` usando apenas `greptile-reviewer-agent-handoff.md`.
+16. Rode `security scan --task-id <task_id>` e preserve o relatório da run.
+17. Revise ortografia, acentuação e clareza em PT-BR e registre com `ptbr-review`.
+18. Consolide os sinais usando `review-consolidation.md`.
+19. Registre a decisão com `evaluate <task_id> --status ... --review-file ...`.
+20. Gere `report <task_id>` e alimente memória de projeto com o resumo aprovado.
+
+### Regra de visibilidade do implementador
+
+- O registro no painel acontece antes da primeira alteração de código da implementação.
+- `start` e `supervisor tick|run --auto-start` registram automaticamente o repo no painel central.
+- `agent register --role builder|developer|implementer|coder` também registra o repo automaticamente.
+- Use `HARNESS_HUB_CONTROL_REPO` para apontar explicitamente o repo de controle do painel. No Windows, sem essa variável, o Harness procura `%LOCALAPPDATA%\HarnessAcompanhamento\control`.
+- O registro é idempotente: o mesmo caminho não é duplicado.
+- Um projeto ocultado pela pessoa usuária permanece oculto. Se tiver sido removido do painel, ele volta a ser adicionado na próxima ativação como implementador.
+- Falha de acesso ao painel gera um aviso claro, mas não apaga arquivos nem altera o escopo da task.
 
 ## v0.3 Superficies
 
