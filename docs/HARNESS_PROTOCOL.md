@@ -24,10 +24,19 @@ planned
 1. the contract exists;
 2. context preflight passes;
 3. final sensors pass;
-4. evaluator accepts the contract;
-5. Greptile-style reviewer has no blocking P0/P1;
-6. security scanner has no blocking finding when enabled;
-7. final notes are recorded.
+4. the exact sensor plan has a recorded review digest;
+5. the current run has a clean security scan;
+6. spelling, accentuation and clarity of PT-BR text have a recorded review;
+7. evaluator accepts the contract with a short decision note;
+8. Greptile-style reviewer has no blocking P0/P1;
+9. elapsed-time and fix-attempt budgets are within their limits;
+10. final notes are recorded.
+
+`queue done` cannot create this state. A queue item linked to a task can only be
+closed after the task is already `passed` through the gates above.
+
+A task-bound security scan includes untracked files automatically so new source
+files cannot escape the final scan merely because they have not been committed.
 
 ## One Task At A Time
 
@@ -84,7 +93,14 @@ changed, the run is blocked.
 
 ## Sensors
 
-Sensors are deterministic commands. They are blocked unless reviewed.
+Sensors are deterministic commands. They are blocked unless the exact tier,
+command list and shell mode match a reviewed SHA-256 digest. Changing an
+override invalidates an earlier review and requires a new `--reviewed`
+attestation.
+
+Final sensors, the security scan, PT-BR review and code-review evidence each
+store the same source-surface digest. A source change after any check makes that
+evidence stale and blocks `pass` until the affected checks are repeated.
 
 Recommended tiers:
 
@@ -121,9 +137,28 @@ standard  normal vertical slice, quick + full sensors
 deep      risky change, richer evidence and security scan
 ```
 
-Budgets can track elapsed time, tokens, command count, external reviews,
-network/plugin calls and artifact size. Hitting a hard budget normally moves
-the task to `needs_work`; it does not count as a pass.
+The run snapshots its selected profile and budget at start. The core CLI
+enforces elapsed time and fix-attempt limits before `pass`; other usage can be
+added by integrations. Hitting a hard budget never counts as a pass.
+
+## Run Baseline
+
+Each run id includes microseconds and random entropy, so two starts cannot reuse
+one directory. `run.json` records the initial commit, branch, worktree status
+and budget. Evaluator handoffs compare the current tree with that initial
+commit, including changes that were committed during the run.
+
+## PT-BR Review
+
+Before final approval, record a language review in the current run:
+
+```text
+harness ptbr-review TASK-001 --status pass \
+  --notes "Ortografia, acentuação e clareza conferidas."
+```
+
+This is an auditable review gate, not a claim that a dictionary can understand
+every product term. If the text still needs corrections, use `needs-work`.
 
 ## Parallel Review
 
@@ -145,6 +180,9 @@ Spawn evaluator and reviewer at the same time. They do not depend on each other.
 - Reviewer P0 blocks.
 - Reviewer P1 in the changed surface blocks.
 - Critical security finding blocks.
+- Missing or failed PT-BR review blocks.
+- Missing reviewer evidence blocks.
+- Exceeded run budget blocks.
 - Stale required context blocks.
 - Failed final sensors block.
 - Reviewer P2 does not block by default.

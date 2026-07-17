@@ -5,8 +5,11 @@ Use this before publishing a new version.
 ## Local Verification
 
 ```powershell
-python -m py_compile bin\harness.py
+python -m ruff check .
+python -m compileall -q bin .github\scripts tests
 python -m pytest tests/
+python -m pip install -e .
+harness-schulx --version
 python bin\harness.py --version
 python bin\harness.py --help
 ```
@@ -24,6 +27,8 @@ python bin\harness.py --help
   budget, artifact, memory, plugin and security scanner docs checked for
   consistency.
 - Tests updated for new behavior.
+- PR body has a short plain-language summary.
+- PT-BR spelling, accentuation and clarity checkbox is checked only after review.
 
 ## GitHub
 

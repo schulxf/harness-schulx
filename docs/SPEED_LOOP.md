@@ -57,7 +57,8 @@ Use it while the task is still being shaped.
 python $HARNESS --repo $APP_REPO full-pass TASK-001 --reviewed
 ```
 
-Use it before final consolidation.
+Use it before final consolidation. It does not skip the run-local security scan,
+PT-BR review or reviewer evidence required by the completion gate.
 
 ## Parallel Dispatch
 
@@ -109,6 +110,9 @@ checkpoint after first useful diff
 quick sensors
 parallel evaluator/reviewer handoffs
 full sensors
+security scan tied to the run
+PT-BR spelling and clarity review
+record evaluator and reviewer decisions
 report
 ```
 

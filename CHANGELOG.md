@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Made JSON writes atomic and protected task/queue read-modify-write operations
+  with cross-process locks.
+- Added unique run ids and Git baselines that preserve committed changes in
+  evaluator evidence.
+- Centralized completion gates for final sensors, context, security, PT-BR
+  review, code review and hard budgets.
+- Bound sensor reviews to a digest of the exact commands, tier and shell mode.
+- Invalidated completion evidence whenever the source surface changes after a
+  check.
+- Prevented `queue done` from bypassing task approval.
+- Added a plain-language PR template, PT-BR checklist and automatic PR comment.
+- Added installable package metadata, Ruff checks and Linux/Windows CI coverage.
+
 ## 0.3.0
 
 - Documented the official v0.3 Harness operating model.

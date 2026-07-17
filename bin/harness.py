@@ -9,14 +9,6 @@ It has no external dependencies.
 
 from __future__ import annotations
 
-import sys
-
-if sys.version_info < (3, 10):
-    sys.stderr.write(
-        f"harness requires Python >= 3.10 (got {sys.version.split()[0]}).\n"
-    )
-    raise SystemExit(2)
-
 import argparse
 import base64
 import hashlib
@@ -28,15 +20,17 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-
 
 VERSION = "0.3.0"
 HARNESS_DIR = ".harness"
@@ -46,6 +40,8 @@ DEFAULT_OPERATION_PROFILES = {
         "description": "Loop curto para feedback rapido.",
         "sensor_tier": "quick",
         "review": "parallel",
+        "security_scan_required": True,
+        "ptbr_review_required": True,
         "max_fix_attempts": 1,
         "time_budget_minutes": 30,
     },
@@ -53,6 +49,8 @@ DEFAULT_OPERATION_PROFILES = {
         "description": "Padrao para trabalho diario.",
         "sensor_tier": "affected",
         "review": "parallel",
+        "security_scan_required": True,
+        "ptbr_review_required": True,
         "max_fix_attempts": 2,
         "time_budget_minutes": 90,
     },
@@ -60,6 +58,8 @@ DEFAULT_OPERATION_PROFILES = {
         "description": "Alias documentado para trabalho diario equilibrado.",
         "sensor_tier": "full",
         "review": "parallel",
+        "security_scan_required": True,
+        "ptbr_review_required": True,
         "max_fix_attempts": 2,
         "time_budget_minutes": 90,
     },
@@ -67,6 +67,8 @@ DEFAULT_OPERATION_PROFILES = {
         "description": "Mais rigor para areas sensiveis.",
         "sensor_tier": "full",
         "review": "parallel",
+        "security_scan_required": True,
+        "ptbr_review_required": True,
         "max_fix_attempts": 3,
         "time_budget_minutes": 180,
     },
@@ -74,6 +76,8 @@ DEFAULT_OPERATION_PROFILES = {
         "description": "Alias documentado para revisao profunda.",
         "sensor_tier": "full",
         "review": "parallel",
+        "security_scan_required": True,
+        "ptbr_review_required": True,
         "max_fix_attempts": 3,
         "time_budget_minutes": 180,
     },
@@ -81,6 +85,8 @@ DEFAULT_OPERATION_PROFILES = {
         "description": "Fechamento antes de publicar.",
         "sensor_tier": "all",
         "review": "parallel",
+        "security_scan_required": True,
+        "ptbr_review_required": True,
         "max_fix_attempts": 3,
         "time_budget_minutes": 240,
     },
@@ -212,7 +218,15 @@ def file_sha256(path: Path) -> str:
 
 def write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8", newline="\n")
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def read_json(path: Path, default: Any = None) -> Any:
@@ -223,6 +237,42 @@ def read_json(path: Path, default: Any = None) -> Any:
 
 def write_json(path: Path, data: Any) -> None:
     write_text(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+
+
+@contextmanager
+def exclusive_lock(lock_path: Path, timeout_seconds: float = 30.0) -> Iterator[None]:
+    """Acquire a small cross-process lock represented by an atomic directory."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            lock_path.mkdir()
+            break
+        except FileExistsError:
+            try:
+                age_seconds = time.time() - lock_path.stat().st_mtime
+                if age_seconds > max(120.0, timeout_seconds * 4):
+                    lock_path.rmdir()
+                    continue
+            except (FileNotFoundError, OSError):
+                pass
+            if time.monotonic() >= deadline:
+                raise HarnessError(
+                    f"Timeout aguardando trava de estado: {lock_path}"
+                ) from None
+            time.sleep(0.02)
+    try:
+        yield
+    finally:
+        try:
+            lock_path.rmdir()
+        except FileNotFoundError:
+            pass
+
+
+def state_lock(root: Path, name: str) -> Any:
+    safe_name = re.sub(r"[^a-zA-Z0-9_.-]+", "-", name).strip("-") or "state"
+    return exclusive_lock(harness_root(root) / "locks" / f"{safe_name}.lock")
 
 
 def root_from_args(args: argparse.Namespace) -> Path:
@@ -406,10 +456,6 @@ def load_tasks(root: Path) -> list[dict[str, Any]]:
     return read_json(tasks_index_path(root), [])
 
 
-def save_tasks(root: Path, tasks: list[dict[str, Any]]) -> None:
-    write_json(tasks_index_path(root), tasks)
-
-
 def find_task(root: Path, task_id: str) -> dict[str, Any]:
     for task in load_tasks(root):
         if task["task_id"] == task_id:
@@ -418,19 +464,20 @@ def find_task(root: Path, task_id: str) -> dict[str, Any]:
 
 
 def update_task(root: Path, task_id: str, **updates: Any) -> None:
-    tasks = load_tasks(root)
-    for task in tasks:
-        if task["task_id"] == task_id:
-            task.update(updates)
-            task["updated_at"] = utc_now()
-            save_tasks(root, tasks)
-            return
+    with state_lock(root, "tasks"):
+        tasks = load_tasks(root)
+        for task in tasks:
+            if task["task_id"] == task_id:
+                task.update(updates)
+                task["updated_at"] = utc_now()
+                write_json(tasks_index_path(root), tasks)
+                return
     raise SystemExit(f"Task nao encontrada: {task_id}")
 
 
-def next_task_id(root: Path) -> str:
+def next_task_id_from(tasks: list[dict[str, Any]]) -> str:
     numbers = []
-    for task in load_tasks(root):
+    for task in tasks:
         match = re.match(r"TASK-(\d+)$", task["task_id"])
         if match:
             numbers.append(int(match.group(1)))
@@ -439,10 +486,6 @@ def next_task_id(root: Path) -> str:
 
 def load_queue(root: Path) -> list[dict[str, Any]]:
     return read_json(queue_path(root), [])
-
-
-def save_queue(root: Path, items: list[dict[str, Any]]) -> None:
-    write_json(queue_path(root), items)
 
 
 def queue_item_id(task_id: str) -> str:
@@ -483,13 +526,14 @@ def active_queue_item(root: Path) -> dict[str, Any] | None:
 
 
 def update_queue_item(root: Path, item_id: str, **updates: Any) -> dict[str, Any]:
-    items = load_queue(root)
-    for item in items:
-        if item.get("id") == item_id:
-            item.update(updates)
-            item["updated_at"] = utc_now()
-            save_queue(root, items)
-            return item
+    with state_lock(root, "queue"):
+        items = load_queue(root)
+        for item in items:
+            if item.get("id") == item_id:
+                item.update(updates)
+                item["updated_at"] = utc_now()
+                write_json(queue_path(root), items)
+                return item
     raise SystemExit(f"Item de fila nao encontrado: {item_id}")
 
 
@@ -883,16 +927,17 @@ def append_event(run_dir: Path, event_type: str, payload: dict[str, Any]) -> Non
         "type": event_type,
         "payload": payload,
     }
-    path = run_dir / "events.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+    append_jsonl(run_dir / "events.jsonl", event)
 
 
 def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    lock_path = path.with_name(f".{path.name}.lock")
+    with exclusive_lock(lock_path):
+        with path.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
 
 
 def http_json_post(
@@ -937,21 +982,21 @@ def http_multipart_post(
     boundary = f"----HarnessBoundary{uuid.uuid4().hex}"
     chunks: list[bytes] = []
     for name, value in fields.items():
-        chunks.append(f"--{boundary}\r\n".encode("utf-8"))
-        chunks.append(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"))
+        chunks.append(f"--{boundary}\r\n".encode())
+        chunks.append(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode())
         chunks.append(str(value).encode("utf-8"))
         chunks.append(b"\r\n")
     for name, path, content_type in files:
-        chunks.append(f"--{boundary}\r\n".encode("utf-8"))
+        chunks.append(f"--{boundary}\r\n".encode())
         disposition = (
             f'Content-Disposition: form-data; name="{name}"; '
             f'filename="{path.name}"\r\n'
         )
         chunks.append(disposition.encode("utf-8"))
-        chunks.append(f"Content-Type: {content_type}\r\n\r\n".encode("utf-8"))
+        chunks.append(f"Content-Type: {content_type}\r\n\r\n".encode())
         chunks.append(path.read_bytes())
         chunks.append(b"\r\n")
-    chunks.append(f"--{boundary}--\r\n".encode("utf-8"))
+    chunks.append(f"--{boundary}--\r\n".encode())
     body = b"".join(chunks)
     request = urllib.request.Request(
         url,
@@ -1221,6 +1266,48 @@ def git_output(root: Path, args: list[str]) -> str:
     if result.returncode != 0:
         return result.stderr.strip()
     return result.stdout.strip()
+
+
+def source_surface_digest(root: Path) -> str:
+    """Hash source state while excluding Harness' own mutable evidence files."""
+    digest = hashlib.sha256(b"harness-source-surface-v1\n")
+    if is_git_repo(root):
+        tracked = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z"],
+            capture_output=True,
+        )
+        untracked = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+                "-z",
+            ],
+            capture_output=True,
+        )
+        if tracked.returncode == 0 and untracked.returncode == 0:
+            raw_paths = set(filter(None, tracked.stdout.split(b"\0")))
+            raw_paths.update(filter(None, untracked.stdout.split(b"\0")))
+            for raw_path in sorted(raw_paths):
+                relative = Path(raw_path.decode("utf-8", errors="surrogateescape"))
+                if HARNESS_DIR in relative.parts:
+                    continue
+                path = root / relative
+                digest.update(b"FILE\0" + raw_path + b"\0")
+                if path.is_file():
+                    digest.update(file_sha256(path).encode())
+                else:
+                    digest.update(b"MISSING")
+            return digest.hexdigest()
+
+    for path in sorted(iter_security_scan_files(root, tracked_only=False)):
+        relative = relative_to_root(root, path)
+        digest.update(f"FILE\0{relative}\0".encode())
+        digest.update(file_sha256(path).encode())
+    return digest.hexdigest()
 
 
 def protected_branches(root: Path) -> list[str]:
@@ -1555,6 +1642,39 @@ def sensors_for_tier(contract: dict[str, Any], tier: str) -> list[str]:
     return tiers[tier]
 
 
+def sensor_plan_digest(tier: str, commands: list[str], allow_shell: bool = False) -> str:
+    plan = {
+        "tier": tier,
+        "commands": [str(command).strip() for command in commands],
+        "allow_shell": bool(allow_shell),
+    }
+    encoded = json.dumps(plan, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def make_sensor_review(sensor_tiers: dict[str, list[str]]) -> dict[str, Any]:
+    all_commands: list[str] = []
+    for tier in SENSOR_TIERS:
+        for command in sensor_tiers.get(tier, []):
+            if command not in all_commands:
+                all_commands.append(command)
+    tier_digests = {
+        tier: sensor_plan_digest(tier, sensor_tiers.get(tier, [])) for tier in SENSOR_TIERS
+    }
+    tier_digests["all"] = sensor_plan_digest("all", all_commands)
+    configuration = json.dumps(
+        {tier: sensor_tiers.get(tier, []) for tier in SENSOR_TIERS},
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return {
+        "digest": hashlib.sha256(configuration.encode()).hexdigest(),
+        "tier_digests": tier_digests,
+        "reviewed_at": utc_now(),
+    }
+
+
 def fastest_available_sensor_tier(contract: dict[str, Any]) -> str:
     tiers = normalize_sensor_tiers(contract)
     for tier in SENSOR_TIERS:
@@ -1644,6 +1764,10 @@ def command_init(args: argparse.Namespace) -> None:
             "context_preflight_required_before_start": True,
             "record_evidence_before_done": True,
             "cache_context_preflight": True,
+            "security_scan_required_before_done": True,
+            "ptbr_review_required_before_done": True,
+            "review_evidence_required_before_done": True,
+            "budget_required_before_done": True,
         },
     }
 
@@ -1777,35 +1901,37 @@ def first_heading_or_filename(path: Path, text: str) -> str:
 
 
 def create_task(root: Path, title: str, body: str, source: str) -> dict[str, Any]:
-    task_id = next_task_id(root)
-    task_path = harness_root(root) / "tasks" / f"{task_id}-{slugify(title)}.md"
-    content = (
-        f"# {task_id} - {title}\n\n"
-        f"Status: planejada\n"
-        f"Origem: {source}\n"
-        f"Criada: {utc_now()}\n\n"
-        "## O que construir\n\n"
-        f"{body.strip() if body.strip() else 'TODO: descrever a fatia vertical.'}\n\n"
-        "## Criterios de aceite\n\n"
-        "- [ ] TODO: definir comportamento observavel.\n\n"
-        "## Fora de escopo\n\n"
-        "- TODO: definir o que esta task nao deve alterar.\n"
-    )
-    write_text(task_path, content)
+    with state_lock(root, "tasks"):
+        tasks = load_tasks(root)
+        task_id = next_task_id_from(tasks)
+        task_path = harness_root(root) / "tasks" / f"{task_id}-{slugify(title)}.md"
+        created_at = utc_now()
+        content = (
+            f"# {task_id} - {title}\n\n"
+            "Status: planejada\n"
+            f"Origem: {source}\n"
+            f"Criada: {created_at}\n\n"
+            "## O que construir\n\n"
+            f"{body.strip() if body.strip() else 'TODO: descrever a fatia vertical.'}\n\n"
+            "## Critérios de aceite\n\n"
+            "- [ ] TODO: definir comportamento observável.\n\n"
+            "## Fora de escopo\n\n"
+            "- TODO: definir o que esta task não deve alterar.\n"
+        )
+        write_text(task_path, content)
 
-    task = {
-        "task_id": task_id,
-        "title": title,
-        "status": "planned",
-        "source": to_posix(source) if source and source != "manual" else source,
-        "task_file": to_posix(task_path.relative_to(root)),
-        "created_at": utc_now(),
-        "updated_at": utc_now(),
-    }
-    tasks = load_tasks(root)
-    tasks.append(task)
-    save_tasks(root, tasks)
-    return task
+        task = {
+            "task_id": task_id,
+            "title": title,
+            "status": "planned",
+            "source": to_posix(source) if source and source != "manual" else source,
+            "task_file": to_posix(task_path.relative_to(root)),
+            "created_at": created_at,
+            "updated_at": created_at,
+        }
+        tasks.append(task)
+        write_json(tasks_index_path(root), tasks)
+        return task
 
 
 def short_title(text: str, fallback: str = "Prompt do Telegram") -> str:
@@ -2598,9 +2724,9 @@ def command_pick(args: argparse.Namespace) -> None:
     print("Nenhuma task pendente.")
 
 
-def next_queue_id(root: Path) -> str:
+def next_queue_id_from(items: list[dict[str, Any]]) -> str:
     numbers = []
-    for item in load_queue(root):
+    for item in items:
         match = re.match(r"QUEUE-(\d+)$", str(item.get("id", "")))
         if match:
             numbers.append(int(match.group(1)))
@@ -2623,24 +2749,37 @@ def command_queue_add(args: argparse.Namespace) -> None:
     elif args.create_task:
         task = create_task(root, title, body, "queue")
         task_id = task["task_id"]
-    queue = load_queue(root)
-    if not args.force and task_id:
-        for item in queue:
-            if item.get("task_id") == task_id and item.get("status") in {"queued", "active"}:
-                raise SystemExit(f"{task_id} ja esta na fila como {item.get('id')}. Use --force para duplicar.")
-    item = {
-        "id": next_queue_id(root),
-        "task_id": task_id,
-        "title": title,
-        "body": body,
-        "status": "queued",
-        "priority": args.priority,
-        "profile": args.profile,
-        "created_at": utc_now(),
-        "updated_at": utc_now(),
-    }
-    queue.append(item)
-    save_queue(root, queue)
+    with state_lock(root, "queue"):
+        queue = load_queue(root)
+        if not args.force and task_id:
+            for existing in queue:
+                if existing.get("task_id") == task_id and existing.get("status") in {
+                    "queued",
+                    "active",
+                }:
+                    raise SystemExit(
+                        f"{task_id} já está na fila como {existing.get('id')}. "
+                        "Use --force para duplicar."
+                    )
+        created_at = utc_now()
+        item = {
+            "id": next_queue_id_from(queue),
+            "task_id": task_id,
+            "title": title,
+            "body": body,
+            "status": "queued",
+            "priority": args.priority,
+            "profile": args.profile,
+            "created_at": created_at,
+            "updated_at": created_at,
+        }
+        queue.append(item)
+        write_json(queue_path(root), queue)
+    if task_id and args.profile:
+        linked_task = find_task(root, task_id)
+        budget = dict(linked_task.get("budget") or {})
+        budget["profile"] = args.profile
+        update_task(root, task_id, budget=budget)
     print(f"{item['id']} queued: {title}")
     if task_id:
         print(f"Task: {task_id}")
@@ -2686,6 +2825,17 @@ def command_queue_done(args: argparse.Namespace) -> None:
     require_existing_root(root)
     require_init(root)
     require_safe_branch(root, args, "queue done")
+    items = load_queue(root)
+    current = next((item for item in items if item.get("id") == args.queue_id), None)
+    if not current:
+        raise SystemExit(f"Item de fila não encontrado: {args.queue_id}")
+    if current.get("task_id") and args.status == "done":
+        task = find_task(root, str(current["task_id"]))
+        if task.get("status") != "passed":
+            raise SystemExit(
+                f"Fila bloqueada: {task['task_id']} ainda não está com status `passed`. "
+                "Conclua sensores, segurança, revisão PT-BR, reviewer e avaliação antes."
+            )
     item = update_queue_item(
         root,
         args.queue_id,
@@ -2693,11 +2843,6 @@ def command_queue_done(args: argparse.Namespace) -> None:
         completed_at=utc_now() if args.status == "done" else None,
         note=args.note or "",
     )
-    if item.get("task_id") and args.status == "done":
-        try:
-            update_task(root, item["task_id"], status="done")
-        except SystemExit:
-            pass
     print(f"{item['id']} -> {item['status']}")
 
 
@@ -2872,6 +3017,7 @@ def command_contract(args: argparse.Namespace) -> None:
         "required_sensors": sensors,
         "sensor_tiers": sensor_tiers,
         "sensors_reviewed": bool(args.reviewed_sensors),
+        "sensor_review": make_sensor_review(sensor_tiers) if args.reviewed_sensors else None,
         "out_of_scope": out_of_scope,
         "source_task_file": to_posix(task["task_file"]),
         "created_at": utc_now(),
@@ -2969,8 +3115,12 @@ def render_builder_brief(
         f"`python {Path(__file__).resolve()} --repo {root} sensors {task['task_id']} --tier quick --reviewed`\n\n"
         "Para o fechamento final, rode:\n\n"
         f"`python {Path(__file__).resolve()} --repo {root} sensors {task['task_id']} --tier full --reviewed`\n\n"
-        "Em seguida, peca avaliacao contratual e review Greptile-style usando os handoffs gerados por:\n\n"
+        "Registre também as verificações de segurança e de texto em PT-BR:\n\n"
+        f"`python {Path(__file__).resolve()} --repo {root} security scan --task-id {task['task_id']} --fail-on-findings`\n\n"
+        f"`python {Path(__file__).resolve()} --repo {root} ptbr-review {task['task_id']} --status pass --notes \"Ortografia, acentuação e clareza conferidas.\"`\n\n"
+        "Em seguida, peça avaliação contratual e review Greptile-style usando os handoffs gerados por:\n\n"
         f"`python {Path(__file__).resolve()} --repo {root} evaluate {task['task_id']}`\n\n"
+        "O `pass` final também precisa receber o parecer do reviewer com `--review-file` ou `--review-note`.\n\n"
         f"Diretorio da run: `{run_dir}`\n"
     )
 
@@ -2985,9 +3135,19 @@ def command_start(args: argparse.Namespace) -> None:
     task = find_task(root, args.task_id)
     contract = load_contract(root, args.task_id)
     require_context_preflight(root, args.task_id, args)
-    run_id = datetime.now(timezone.utc).strftime("run-%Y%m%dT%H%M%SZ")
+    run_id = (
+        datetime.now(timezone.utc).strftime("run-%Y%m%dT%H%M%S%f")
+        + f"-{uuid.uuid4().hex[:8]}Z"
+    )
     run_dir = harness_root(root) / "runs" / args.task_id / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
+    run_dir.mkdir(parents=True, exist_ok=False)
+    git_repo = is_git_repo(root)
+    raw_base_commit = git_output(root, ["rev-parse", "HEAD"]) if git_repo else ""
+    base_commit = (
+        raw_base_commit if re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", raw_base_commit) else None
+    )
+    initial_git_status = git_output(root, ["status", "--short"]) if git_repo else ""
+    budget = task_budget(task, config)
     write_json(
         run_dir / "run.json",
         {
@@ -2996,6 +3156,11 @@ def command_start(args: argparse.Namespace) -> None:
             "created_at": utc_now(),
             "status": "started",
             "root": str(root),
+            "base_commit": base_commit,
+            "base_branch": current_git_branch(root),
+            "initial_git_status": initial_git_status,
+            "initial_surface_digest": source_surface_digest(root),
+            "budget": budget,
         },
     )
     write_text(run_dir / "builder-brief.md", render_builder_brief(root, task, contract, run_dir))
@@ -3017,11 +3182,18 @@ def command_sensors(args: argparse.Namespace) -> None:
     if tier == "quick":
         tier = fastest_available_sensor_tier(contract)
     commands = args.command or sensors_for_tier(contract, tier)
-    if commands and not (args.reviewed or contract.get("sensors_reviewed")):
+    review_digest = sensor_plan_digest(tier, commands, bool(args.allow_shell))
+    contract_review = contract.get("sensor_review") or {}
+    reviewed_by_contract = (
+        not args.allow_shell
+        and review_digest == (contract_review.get("tier_digests") or {}).get(tier)
+    )
+    reviewed = bool(args.reviewed or reviewed_by_contract)
+    if commands and not reviewed:
         raise SystemExit(
-            "Execucao bloqueada: sensores ainda nao foram revisados.\n"
-            "Revise os comandos no contrato/brief da run e rode novamente com `sensors --reviewed`, "
-            "ou marque o contrato com `--reviewed-sensors` ao cria-lo."
+            "Execução bloqueada: o plano exato de sensores ainda não foi revisado.\n"
+            "Revise os comandos, o tier e o uso de shell. Depois rode novamente com "
+            "`sensors --reviewed`, ou recrie o contrato com `--reviewed-sensors`."
         )
 
     results = []
@@ -3103,7 +3275,10 @@ def command_sensors(args: argparse.Namespace) -> None:
         "run_dir": str(run_dir),
         "created_at": utc_now(),
         "tier": tier,
-        "reviewed": bool(args.reviewed or contract.get("sensors_reviewed")),
+        "reviewed": reviewed,
+        "review_source": "execution" if args.reviewed else "contract",
+        "review_digest": review_digest,
+        "surface_digest": source_surface_digest(root),
         "shell": bool(args.allow_shell),
         "passed": passed,
         "results": results,
@@ -3130,10 +3305,34 @@ def command_sensors(args: argparse.Namespace) -> None:
 
 def render_evaluator_brief(root: Path, task: dict[str, Any], contract: dict[str, Any], run_dir: Path) -> str:
     sensors = read_json(run_dir / "sensors.json", {"passed": False, "results": []})
+    security = read_json(run_dir / "security-scan.json", {})
+    ptbr_review = read_json(run_dir / "ptbr-review.json", {})
     preflight = check_context_preflight(root, task["task_id"])
+    run_meta = read_json(run_dir / "run.json", {})
+    base_commit = run_meta.get("base_commit")
     status = git_output(root, ["status", "--short"]) if is_git_repo(root) else "Nao e um repo git."
-    diff = git_output(root, ["diff", "--stat"]) if is_git_repo(root) else "Diff git indisponivel."
-    full_diff_hint = "Rode `git diff` no repo se precisar inspecionar arquivos em detalhe."
+    if is_git_repo(root) and base_commit:
+        diff = git_output(root, ["diff", "--stat", str(base_commit)])
+        changed_files = git_output(root, ["diff", "--name-status", str(base_commit)])
+        full_diff_hint = f"Para o diff completo desta run, use `git diff {base_commit}`."
+    elif is_git_repo(root):
+        diff = git_output(root, ["diff", "--stat"])
+        changed_files = git_output(root, ["diff", "--name-status"])
+        full_diff_hint = "Para o diff completo, use `git diff`."
+    else:
+        diff = "Diff git indisponivel."
+        changed_files = "Superficie alterada indisponivel."
+        full_diff_hint = ""
+    write_json(
+        run_dir / "changed-surface.json",
+        {
+            "created_at": utc_now(),
+            "base_commit": base_commit,
+            "head_commit": git_output(root, ["rev-parse", "HEAD"]) if is_git_repo(root) else None,
+            "files": changed_files.splitlines() if changed_files else [],
+            "worktree_status": status.splitlines() if status else [],
+        },
+    )
     return (
         f"# Brief do avaliador - {task['task_id']}\n\n"
         "Avalie a implementacao contra o contrato. O implementador nao pode se autoaprovar.\n\n"
@@ -3146,13 +3345,21 @@ def render_evaluator_brief(root: Path, task: dict[str, Any], contract: dict[str,
         f"```json\n{json.dumps(contract, indent=2, ensure_ascii=False)}\n```\n\n"
         "## Evidencia dos sensores\n\n"
         f"```json\n{json.dumps(sensors, indent=2, ensure_ascii=False)}\n```\n\n"
+        "## Security scan da run\n\n"
+        f"```json\n{json.dumps(security, indent=2, ensure_ascii=False)}\n```\n\n"
+        "## Revisão PT-BR\n\n"
+        f"```json\n{json.dumps(ptbr_review, indent=2, ensure_ascii=False)}\n```\n\n"
         "## Preflight de contexto\n\n"
         f"```json\n{json.dumps(preflight, indent=2, ensure_ascii=False)}\n```\n\n"
         "## Memoria do projeto\n\n"
         f"{render_memory_context(root, task['task_id'])}\n\n"
         "## Status do Git\n\n"
         f"```text\n{status}\n```\n\n"
-        "## Estatistica do diff\n\n"
+        "## Baseline imutável da run\n\n"
+        f"Commit inicial: `{base_commit or 'indisponível'}`\n\n"
+        "## Superfície alterada desde o início da run\n\n"
+        f"```text\n{changed_files}\n```\n\n"
+        "## Estatística do diff\n\n"
         f"```text\n{diff}\n```\n\n"
         f"{full_diff_hint}\n"
     )
@@ -3276,8 +3483,10 @@ def render_review_consolidation(
         "- P2 deve virar ajuste opcional ou follow-up, salvo se voce decidir promover a severidade com evidencia.\n\n"
         "## Registro\n\n"
         "- Se houver bloqueador, registre `evaluate --status fail` com gaps concretos.\n"
-        "- Se o avaliador retornou PASS e o reviewer nao encontrou P0/P1 bloqueante, registre `evaluate --status pass`.\n"
-        "- Inclua nas notas finais o resumo do avaliador e o resumo do reviewer.\n"
+        "- Antes de `pass`, registre o security scan e a revisão PT-BR da run.\n"
+        "- Se o avaliador retornou PASS e o reviewer não encontrou P0/P1 bloqueante, "
+        "registre `evaluate --status pass --review-file reviewer-output.md`.\n"
+        "- Inclua nas notas finais o resumo do avaliador e identifique os dois revisores.\n"
     )
 
 
@@ -3393,6 +3602,14 @@ def render_plain_summary_for_message(summary: str) -> str:
 def extract_review_findings(text: str) -> list[dict[str, str]]:
     findings: list[dict[str, str]] = []
     for line in text.splitlines():
+        if re.search(
+            r"\bachados?(?:\s+bloqueantes?)?\s*:\s*nenhum\b"
+            r"|\bnenhum\s+(?:achado|finding|p[012])\b"
+            r"|\bp[012](?:/p[012])*\s*:\s*nenhum\b",
+            line,
+            re.IGNORECASE,
+        ):
+            continue
         match = re.search(r"\bP([012])\b|\[P([012])\]", line, re.IGNORECASE)
         if not match:
             continue
@@ -3806,19 +4023,26 @@ def command_security_scan(args: argparse.Namespace) -> None:
     root = root_from_args(args)
     require_existing_root(root)
     require_init(root)
-    files = iter_security_scan_files(root, tracked_only=not args.include_untracked)
+    run_dir = latest_run_dir(root, args.task_id) if args.task_id else None
+    include_untracked = bool(args.include_untracked or args.task_id)
+    files = iter_security_scan_files(root, tracked_only=not include_untracked)
     findings: list[dict[str, Any]] = []
     for file in files:
         if file.exists():
             findings.extend(scan_file_for_secrets(root, file))
     report = {
         "created_at": utc_now(),
-        "tracked_only": not args.include_untracked,
+        "tracked_only": not include_untracked,
         "files_scanned": len(files),
         "findings": findings,
+        "task_id": args.task_id,
+        "run_id": run_dir.name if run_dir else None,
+        "surface_digest": source_surface_digest(root),
     }
     path = security_root(root) / "scan-latest.json"
     write_json(path, report)
+    if run_dir:
+        write_json(run_dir / "security-scan.json", report)
     if args.json:
         print(json.dumps(report, indent=2, ensure_ascii=False))
     else:
@@ -3826,8 +4050,43 @@ def command_security_scan(args: argparse.Namespace) -> None:
         for finding in findings:
             print(f"- {finding['kind']} {finding['path']}:{finding['line']}")
         print(f"Relatorio: {path}")
-    if findings:
+    if findings and args.fail_on_findings:
         raise SystemExit(1)
+
+
+def command_ptbr_review(args: argparse.Namespace) -> None:
+    root = root_from_args(args)
+    require_existing_root(root)
+    require_init(root)
+    require_safe_branch(root, args, "ptbr-review")
+    find_task(root, args.task_id)
+    run_dir = latest_run_dir(root, args.task_id)
+    notes = str(args.notes or "").strip()
+    if args.status == "pass" and not notes:
+        raise SystemExit(
+            "Revisão PT-BR bloqueada: registre uma nota curta sobre ortografia, "
+            "acentuação e clareza."
+        )
+    review = {
+        "task_id": args.task_id,
+        "run_id": run_dir.name,
+        "created_at": utc_now(),
+        "status": args.status,
+        "reviewer": args.reviewer or "não informado",
+        "notes": notes,
+        "checks": ["ortografia", "acentuação", "clareza"],
+        "surface_digest": source_surface_digest(root),
+    }
+    write_json(run_dir / "ptbr-review.json", review)
+    append_and_maybe_notify_event(
+        root,
+        run_dir,
+        "ptbr_review_recorded",
+        {"task_id": args.task_id, "status": args.status},
+    )
+    if args.status == "needs-work":
+        update_task(root, args.task_id, status="needs_work")
+    print(f"Revisão PT-BR registrada para {args.task_id}: {args.status}")
 
 
 def command_security_status(args: argparse.Namespace) -> None:
@@ -4743,6 +5002,20 @@ def supervisor_recommendation(root: Path, item: dict[str, Any]) -> str:
         tier = fastest_available_sensor_tier(contract)
         return f"Rodar sensores: python {Path(__file__).resolve()} --repo {root} sensors {task_id} --tier {tier} --reviewed"
     if status == "sensors_passed":
+        run_dir = latest_run_dir_or_none(root, task_id)
+        if run_dir and not (run_dir / "security-scan.json").exists():
+            return (
+                "Rodar security scan: "
+                f"python {Path(__file__).resolve()} --repo {root} security scan "
+                f"--task-id {task_id} --fail-on-findings"
+            )
+        ptbr_review = read_json(run_dir / "ptbr-review.json", {}) if run_dir else {}
+        if ptbr_review.get("status") != "pass":
+            return (
+                "Revisar PT-BR: "
+                f"python {Path(__file__).resolve()} --repo {root} ptbr-review "
+                f"{task_id} --status pass --notes \"Ortografia, acentuação e clareza conferidas.\""
+            )
         return f"Avaliar: python {Path(__file__).resolve()} --repo {root} evaluate {task_id}"
     if status in {"passed", "done"}:
         return f"Fechar fila: python {Path(__file__).resolve()} --repo {root} queue done {item.get('id')}"
@@ -4828,18 +5101,44 @@ def render_github_pr_body(root: Path, task_id: str) -> str:
     run_dir = latest_run_dir_or_none(root, task_id)
     plain = read_text(run_dir / "plain-summary.md") if run_dir and (run_dir / "plain-summary.md").exists() else ""
     report = read_text(report_path) if report_path.exists() else ""
-    security = read_json(security_root(root) / "scan-latest.json", {})
-    security_line = f"{len(security.get('findings') or [])} finding(s)" if security else "nao executado"
+    sensors = read_json(run_dir / "sensors.json", {}) if run_dir else {}
+    security = read_json(run_dir / "security-scan.json", {}) if run_dir else {}
+    ptbr_review = read_json(run_dir / "ptbr-review.json", {}) if run_dir else {}
+    evaluation = read_json(run_dir / "evaluation.json", {}) if run_dir else {}
+    simple_summary = render_plain_summary_for_message(plain) if plain else ""
+    if not simple_summary:
+        simple_summary = f"Foi trabalhada a tarefa \"{plain_clean(task.get('title'))}\"."
+    check_lines = [
+        "As conferências automáticas passaram."
+        if sensors.get("passed")
+        else "As conferências automáticas ainda não passaram.",
+        "A verificação de segurança não encontrou segredos."
+        if security and not security.get("findings")
+        else "A verificação de segurança ainda precisa ser concluída.",
+        "Os textos em PT-BR foram revisados."
+        if ptbr_review.get("status") == "pass"
+        else "A revisão dos textos em PT-BR ainda precisa ser concluída.",
+    ]
+    gaps = [plain_clean(item) for item in evaluation.get("gaps", []) if plain_clean(item)]
+    pending = "\n".join(f"- {gap}" for gap in gaps) if gaps else "Nenhuma."
+    security_line = f"{len(security.get('findings') or [])} achado(s)" if security else "não executado"
+    ptbr_checkbox = "x" if ptbr_review.get("status") == "pass" else " "
     return (
         f"# {task_id} - {task.get('title')}\n\n"
         "## Resumo simples\n\n"
-        f"{plain or 'Resumo simples ainda nao gerado.'}\n\n"
-        "## Evidencia Harness\n\n"
+        f"{simple_summary}\n\n"
+        "## Como conferi\n\n"
+        f"{' '.join(check_lines)}\n\n"
+        "## Pendências\n\n"
+        f"{pending}\n\n"
+        "## Checklist\n\n"
+        f"- [{ptbr_checkbox}] Revisei ortografia, acentuação e clareza dos textos em PT-BR.\n\n"
+        "## Evidência Harness\n\n"
         f"- Status da task: {task.get('status')}\n"
         f"- Security scan: {security_line}\n"
-        f"- Relatorio: `{to_posix(report_path.relative_to(root)) if report_path.exists() else 'pendente'}`\n\n"
-        "## Relatorio completo\n\n"
-        f"{report or 'Relatorio ainda nao gerado.'}\n"
+        f"- Relatório: `{to_posix(report_path.relative_to(root)) if report_path.exists() else 'pendente'}`\n\n"
+        "## Relatório completo\n\n"
+        f"{report or 'Relatório ainda não gerado.'}\n"
     )
 
 
@@ -4935,7 +5234,17 @@ def command_policy_show(args: argparse.Namespace) -> None:
     require_existing_root(root)
     require_init(root)
     config = load_config(root)
-    print(json.dumps({"failure_policy": failure_policy(config), "review_policy": review_policy(config)}, indent=2, ensure_ascii=False))
+    print(
+        json.dumps(
+            {
+                "completion_policy": config.get("policy", {}),
+                "failure_policy": failure_policy(config),
+                "review_policy": review_policy(config),
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
 
 
 def command_policy_set(args: argparse.Namespace) -> None:
@@ -4996,6 +5305,140 @@ def command_failure_apply(args: argparse.Namespace) -> None:
         print("Nenhum bloqueador detectado.")
 
 
+def collect_code_review(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]:
+    parts: list[str] = []
+    for raw_path in getattr(args, "review_file", None) or []:
+        path = Path(raw_path).expanduser().resolve()
+        if not path.exists():
+            raise SystemExit(f"Arquivo de review não encontrado: {path}")
+        parts.append(read_text(path))
+    parts.extend(getattr(args, "review_note", None) or [])
+    text = "\n\n".join(part.strip() for part in parts if part.strip())
+    blockers = blocking_findings_from_review(text, config) if text else []
+    return {
+        "created_at": utc_now(),
+        "reviewer": getattr(args, "reviewer", None) or "não informado",
+        "text": text,
+        "findings": extract_review_findings(text) if text else [],
+        "blocking_findings": blockers,
+        "passed": bool(text) and not blockers,
+    }
+
+
+def parse_utc_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def completion_gate_failures(
+    root: Path,
+    task: dict[str, Any],
+    contract: dict[str, Any],
+    run_dir: Path,
+    config: dict[str, Any],
+    evaluation_notes: str,
+    code_review: dict[str, Any],
+) -> list[str]:
+    failures: list[str] = []
+    policy = config.get("policy", {})
+    run_meta = read_json(run_dir / "run.json", {})
+    budget = dict(run_meta.get("budget") or task_budget(task, config))
+    current_surface = source_surface_digest(root)
+
+    if config_bool(policy.get("record_evidence_before_done"), True):
+        sensors_payload = final_sensor_payload(run_dir, contract)
+        if not sensors_payload:
+            failures.append("não há evidência de sensores finais nesta run")
+        elif not sensors_payload.get("passed"):
+            failures.append("os sensores finais registrados não passaram")
+        elif not sensors_payload.get("reviewed") or not sensors_payload.get("review_digest"):
+            failures.append("o plano exato de sensores não tem revisão registrada")
+        elif sensors_payload.get("surface_digest") != current_surface:
+            failures.append("o código mudou depois da execução dos sensores finais")
+
+    if config_bool(policy.get("context_preflight_required_before_start"), True):
+        preflight = check_context_preflight(root, task["task_id"])
+        if not preflight.get("passed"):
+            failures.append("o preflight de contexto atual não passou")
+
+    security_required = config_bool(
+        policy.get("security_scan_required_before_done"), True
+    ) and config_bool(budget.get("security_scan_required"), True)
+    if security_required:
+        security = read_json(run_dir / "security-scan.json", {})
+        if not security:
+            failures.append("falta um security scan desta run")
+        elif security.get("run_id") != run_dir.name:
+            failures.append("o security scan não pertence à run atual")
+        elif security.get("findings"):
+            failures.append(
+                f"o security scan tem {len(security.get('findings') or [])} achado(s)"
+            )
+        elif security.get("surface_digest") != current_surface:
+            failures.append("o código mudou depois do security scan")
+
+    ptbr_required = config_bool(
+        policy.get("ptbr_review_required_before_done"), True
+    ) and config_bool(budget.get("ptbr_review_required"), True)
+    if ptbr_required:
+        ptbr_review = read_json(run_dir / "ptbr-review.json", {})
+        if not ptbr_review:
+            failures.append("falta a revisão de ortografia e clareza em PT-BR")
+        elif ptbr_review.get("status") != "pass":
+            failures.append("a revisão PT-BR ainda pede ajustes")
+        elif not str(ptbr_review.get("notes") or "").strip():
+            failures.append("a revisão PT-BR não contém uma nota de evidência")
+        elif ptbr_review.get("surface_digest") != current_surface:
+            failures.append("os arquivos mudaram depois da revisão PT-BR")
+
+    reviewer_required = config_bool(
+        policy.get("review_evidence_required_before_done"), True
+    ) and config_bool(review_policy(config).get("enabled"), True)
+    if reviewer_required:
+        if not code_review.get("text"):
+            failures.append("falta o parecer do code reviewer")
+        elif code_review.get("blocking_findings"):
+            severities = ", ".join(
+                sorted(
+                    {
+                        str(item.get("severity"))
+                        for item in code_review.get("blocking_findings") or []
+                    }
+                )
+            )
+            failures.append(f"o code reviewer registrou achado(s) bloqueante(s): {severities}")
+        elif code_review.get("surface_digest") != current_surface:
+            failures.append("o código mudou depois do parecer do code reviewer")
+
+    if not evaluation_notes.strip():
+        failures.append("falta uma nota curta com a decisão do avaliador")
+
+    if config_bool(policy.get("budget_required_before_done"), True):
+        started_at = parse_utc_datetime(run_meta.get("created_at"))
+        time_limit = budget.get("time_budget_minutes") or budget.get("timeout_minutes")
+        if started_at and time_limit:
+            elapsed_minutes = (datetime.now(timezone.utc) - started_at).total_seconds() / 60
+            if elapsed_minutes > float(time_limit):
+                failures.append(
+                    f"o orçamento de tempo foi excedido ({elapsed_minutes:.1f}/{time_limit} min)"
+                )
+        max_fix_attempts = budget.get("max_fix_attempts")
+        fix_attempts = len(list(run_dir.glob("fix-brief-[0-9][0-9].md")))
+        if max_fix_attempts is not None and fix_attempts > int(max_fix_attempts):
+            failures.append(
+                f"o limite de correções foi excedido ({fix_attempts}/{max_fix_attempts})"
+            )
+
+    return failures
+
+
 def command_evaluate(args: argparse.Namespace) -> None:
     root = root_from_args(args)
     require_existing_root(root)
@@ -5048,23 +5491,39 @@ def command_evaluate(args: argparse.Namespace) -> None:
     if args.notes_file:
         notes = read_text(Path(args.notes_file).expanduser().resolve())
 
+    code_review = collect_code_review(args, config)
+    if code_review.get("text"):
+        code_review.update(
+            {
+                "task_id": args.task_id,
+                "run_id": run_dir.name,
+                "surface_digest": source_surface_digest(root),
+            }
+        )
+        write_json(run_dir / "code-review.json", code_review)
+
     if args.status == "pass":
-        policy = config.get("policy", {})
-        if config_bool(policy.get("record_evidence_before_done"), True):
-            sensors_payload = final_sensor_payload(run_dir, contract)
-            if not sensors_payload:
-                raise SystemExit(
-                    "Avaliacao `pass` bloqueada: nao ha evidencia de sensores finais na run.\n"
-                    f"Rode `harness sensors {args.task_id} --tier full --reviewed` antes, ou desabilite "
-                    "`policy.record_evidence_before_done` em `.harness/config.json` para uma "
-                    "excecao consciente."
-                )
-            if not sensors_payload.get("passed"):
-                raise SystemExit(
-                    "Avaliacao `pass` bloqueada: sensores registrados nao passaram.\n"
-                    "Corrija a implementacao e rode os sensores novamente, ou registre "
-                    "`--status fail` / `--status needs-work` com lacunas concretas."
-                )
+        effective_review = (
+            code_review
+            if code_review.get("text")
+            else read_json(run_dir / "code-review.json", {})
+        )
+        failures = completion_gate_failures(
+            root,
+            task,
+            contract,
+            run_dir,
+            config,
+            notes,
+            effective_review,
+        )
+        if failures:
+            details = "\n".join(f"- {failure}" for failure in failures)
+            raise SystemExit(
+                "Avaliação `pass` bloqueada pelos gates de conclusão:\n"
+                f"{details}\n\n"
+                "Registre somente as evidências que realmente foram conferidas e tente novamente."
+            )
 
     evaluation = {
         "task_id": args.task_id,
@@ -5073,6 +5532,7 @@ def command_evaluate(args: argparse.Namespace) -> None:
         "status": args.status,
         "notes": notes,
         "gaps": args.gap or [],
+        "evaluator": getattr(args, "evaluator", None) or "não informado",
     }
     write_json(run_dir / "evaluation.json", evaluation)
     write_text(
@@ -5634,6 +6094,16 @@ def render_report(
     criteria_lines = [f"- {item}" for item in criteria] if criteria else ["- Nenhum criterio registrado."]
     preflight = check_context_preflight(root, task["task_id"])
     preflight_text = render_preflight_text(preflight)
+    security = read_json(run_dir / "security-scan.json", {})
+    ptbr_review = read_json(run_dir / "ptbr-review.json", {})
+    code_review = read_json(run_dir / "code-review.json", {})
+    security_status = (
+        "PASS"
+        if security and not security.get("findings")
+        else f"FAIL ({len(security.get('findings') or [])} achado(s))"
+        if security
+        else "não registrado"
+    )
     git_status = git_output(root, ["status", "--short"]) if is_git_repo(root) else "Nao e um repo git."
     plain_summary = plain_summary or render_plain_summary(task, contract, sensors, evaluation)
     plain_summary_body = re.sub(r"^# .+?\n\n", "", plain_summary, count=1)
@@ -5652,6 +6122,12 @@ def render_report(
         f"{chr(10).join(criteria_lines)}\n\n"
         "## Sensores\n\n"
         f"{chr(10).join(sensor_lines)}\n\n"
+        "## Revisões obrigatórias\n\n"
+        f"- Security scan: {security_status}\n"
+        f"- PT-BR: {ptbr_review.get('status', 'não registrado')}"
+        f" — {ptbr_review.get('notes', 'sem nota')}\n"
+        f"- Code review: {'PASS' if code_review.get('passed') else 'não aprovado'}"
+        f" — {code_review.get('reviewer', 'não informado')}\n\n"
         "## Preflight de contexto\n\n"
         f"```text\n{preflight_text}\n```\n\n"
         "## Memoria do projeto\n\n"
@@ -5906,10 +6382,21 @@ def build_parser() -> argparse.ArgumentParser:
     security_scan = security_sub.add_parser("scan", help="Procura secrets em arquivos versionados")
     security_scan.add_argument("--include-untracked", action="store_true", help="Inclui arquivos nao rastreados")
     security_scan.add_argument("--fail-on-findings", action="store_true", help="Falha quando houver achados")
+    security_scan.add_argument("--task-id", help="Vincula o scan à run atual de uma task")
     security_scan.add_argument("--json", action="store_true", help="Imprime JSON")
     security_scan.set_defaults(func=command_security_scan)
     security_status = security_sub.add_parser("status", help="Mostra ultimo scan")
     security_status.set_defaults(func=command_security_status)
+
+    ptbr_review = sub.add_parser(
+        "ptbr-review",
+        help="Registra revisão de ortografia, acentuação e clareza em PT-BR",
+    )
+    ptbr_review.add_argument("task_id")
+    ptbr_review.add_argument("--status", choices=["pass", "needs-work"], required=True)
+    ptbr_review.add_argument("--reviewer", help="Pessoa ou agente que fez a revisão")
+    ptbr_review.add_argument("--notes", help="Nota curta com o que foi conferido")
+    ptbr_review.set_defaults(func=command_ptbr_review)
 
     evaluate = sub.add_parser("evaluate", help="Cria brief/handoff do avaliador ou registra avaliacao")
     evaluate.add_argument("task_id")
@@ -5917,6 +6404,10 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--notes", help="Notas da avaliacao")
     evaluate.add_argument("--notes-file", help="Le notas de avaliacao de um arquivo")
     evaluate.add_argument("--gap", action="append", help="Lacuna/item de correcao; repetivel")
+    evaluate.add_argument("--evaluator", help="Pessoa ou agente que tomou a decisão contratual")
+    evaluate.add_argument("--review-file", action="append", help="Arquivo com parecer do code reviewer")
+    evaluate.add_argument("--review-note", action="append", help="Parecer curto do code reviewer")
+    evaluate.add_argument("--reviewer", help="Pessoa ou agente que fez o code review")
     evaluate.set_defaults(func=command_evaluate)
 
     fix_brief = sub.add_parser("fix-brief", help="Cria brief rapido para corrigir P0/P1 na mesma task")

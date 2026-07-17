@@ -99,6 +99,7 @@ Rules:
 - ready tasks must have enough context to form a contract;
 - blocked tasks must name the blocker and next required human decision;
 - queue order is advisory unless the supervisor is in automatic mode.
+- a linked queue item can become `done` only after its task is already `passed`.
 
 ## Supervisor
 
@@ -111,6 +112,7 @@ Responsibilities:
 - create or validate contracts before work starts;
 - run preflight before `start`;
 - enforce branch and sensor review policy;
+- preserve a unique run id and the initial Git commit as evaluation baseline;
 - write checkpoints after meaningful transitions;
 - stop or pause when budgets are exhausted;
 - launch evaluator, reviewer and security checks;
@@ -227,6 +229,9 @@ Blocking by default:
 - reviewer P0;
 - reviewer P1 in changed surface;
 - critical security finding;
+- missing or failed PT-BR spelling and clarity review;
+- missing reviewer evidence;
+- elapsed-time or fix-attempt budget exhausted;
 - missing final evidence.
 
 Usually non-blocking:
@@ -279,10 +284,11 @@ renderer, CI bridge, mobile test runner.
 
 ## Security Scanner
 
-The scanner runs before final approval in `standard` and `deep` profiles, and
-may be manual in `fast`.
+The built-in scanner runs before final approval in every default profile. It
+scans common secret and credential patterns in tracked text files and can
+include untracked files explicitly.
 
-Minimum checks:
+Optional scanner integrations may add broader checks:
 
 - secrets in changed files and reports;
 - `.env`, token, key and credential patterns;
@@ -344,9 +350,12 @@ A v0.3 task is done when:
 2. required context preflight passed;
 3. the latest run has checkpoints and evidence;
 4. final sensors passed;
-5. evaluator accepted;
-6. reviewer has no blocking finding;
-7. security scanner has no blocking finding;
-8. report and plain summary exist;
-9. follow-ups were created for accepted non-blockers;
-10. dashboard/queue state matches the final decision.
+5. the exact sensor plan has a recorded review digest;
+6. PT-BR spelling, accentuation and clarity were reviewed;
+7. evaluator accepted with a short decision note;
+8. reviewer evidence exists and has no blocking finding;
+9. the current run's security scanner has no finding;
+10. hard run budgets are within their limits;
+11. report and plain summary exist;
+12. follow-ups were created for accepted non-blockers;
+13. dashboard/queue state matches the final decision.

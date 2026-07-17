@@ -21,6 +21,24 @@ def init_repo(tmp_path: Path) -> Path:
     return repo
 
 
+def record_completion_reviews(repo: Path) -> None:
+    assert run(
+        ["--repo", str(repo), "security", "scan", "--task-id", "TASK-001"]
+    ) == 0
+    assert run(
+        [
+            "--repo",
+            str(repo),
+            "ptbr-review",
+            "TASK-001",
+            "--status",
+            "pass",
+            "--notes",
+            "Ortografia, acentuação e clareza conferidas.",
+        ]
+    ) == 0
+
+
 def test_init_creates_layout(tmp_path):
     repo = init_repo(tmp_path)
     h = repo / ".harness"
@@ -35,11 +53,15 @@ def test_init_creates_layout(tmp_path):
     config = json.loads((h / "config.json").read_text(encoding="utf-8"))
     assert config["project_name"] == "test"
     assert config["telegram"]["enabled"] is False
-    # Dead policy flags should be gone; only the two enforced ones remain.
+    # Every configured policy below is enforced by a command gate.
     assert set(config["policy"].keys()) == {
         "context_preflight_required_before_start",
         "record_evidence_before_done",
         "cache_context_preflight",
+        "security_scan_required_before_done",
+        "ptbr_review_required_before_done",
+        "review_evidence_required_before_done",
+        "budget_required_before_done",
     }
 
 
@@ -269,7 +291,21 @@ def test_evaluate_pass_requires_full_tier_when_configured(tmp_path):
     with pytest.raises(SystemExit):
         run(["--repo", str(repo), "evaluate", "TASK-001", "--status", "pass", "--notes", "ok"])
     run(["--repo", str(repo), "sensors", "TASK-001", "--tier", "full"])
-    assert run(["--repo", str(repo), "evaluate", "TASK-001", "--status", "pass", "--notes", "ok"]) == 0
+    record_completion_reviews(repo)
+    assert run(
+        [
+            "--repo",
+            str(repo),
+            "evaluate",
+            "TASK-001",
+            "--status",
+            "pass",
+            "--notes",
+            "ok",
+            "--review-note",
+            "Nenhum achado bloqueante.",
+        ]
+    ) == 0
 
 
 def test_evaluate_pass_requires_passing_sensors(tmp_path):
@@ -459,6 +495,7 @@ def test_report_renders_after_full_flow(tmp_path):
     )
     run(["--repo", str(repo), "start", "TASK-001"])
     run(["--repo", str(repo), "sensors", "TASK-001"])
+    record_completion_reviews(repo)
     run(
         [
             "--repo",
@@ -469,6 +506,8 @@ def test_report_renders_after_full_flow(tmp_path):
             "pass",
             "--notes",
             "ok",
+            "--review-note",
+            "Nenhum achado bloqueante.",
         ]
     )
     assert run(["--repo", str(repo), "report", "TASK-001"]) == 0
