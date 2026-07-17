@@ -145,6 +145,7 @@ from harness_core.hub_agents import (  # noqa: E402
 )
 from harness_core.hub_auth import hub_action_authorized, hub_local_request_allowed  # noqa: E402
 from harness_core.hub_registry import (  # noqa: E402
+    HUB_CONTROL_REPO_DISABLED,
     add_hub_repo,
     hub_repo_registry_entries,
     load_hub_repo_registry,
@@ -2750,7 +2751,7 @@ def run_compat_command(repo: Path, args: list[str]) -> dict[str, Any]:
     command = [sys.executable, str(Path(__file__).resolve()), "--repo", str(repo), *args]
     started = time.monotonic()
     environment = dict(os.environ)
-    environment["HARNESS_HUB_CONTROL_REPO"] = ""
+    environment["HARNESS_HUB_CONTROL_REPO"] = HUB_CONTROL_REPO_DISABLED
     result = subprocess.run(
         command,
         cwd=repo.parent if repo.parent.exists() else None,

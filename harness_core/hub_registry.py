@@ -11,6 +11,10 @@ from harness_core.paths import hub_repo_registry_path, normalize_path_key
 from harness_core.storage import read_json, state_lock, write_json
 
 HUB_CONTROL_REPO_ENV = "HARNESS_HUB_CONTROL_REPO"
+HUB_CONTROL_REPO_DISABLED = "disabled"
+_HUB_CONTROL_REPO_DISABLED_VALUES = frozenset(
+    {"0", "disabled", "false", "none", "off"}
+)
 
 
 def _normalized_paths(repos: list[str]) -> list[str]:
@@ -107,6 +111,8 @@ def discover_hub_control_repo(
     values = os.environ if environ is None else environ
     if HUB_CONTROL_REPO_ENV in values:
         configured = str(values.get(HUB_CONTROL_REPO_ENV) or "").strip()
+        if configured.casefold() in _HUB_CONTROL_REPO_DISABLED_VALUES:
+            return None
         candidates = [Path(configured)] if configured else []
     else:
         local_app_data = str(values.get("LOCALAPPDATA") or "").strip()

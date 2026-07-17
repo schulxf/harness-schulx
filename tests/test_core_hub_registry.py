@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from harness_core.hub_registry import (
+    HUB_CONTROL_REPO_DISABLED,
     HUB_CONTROL_REPO_ENV,
     add_hub_repo,
     discover_hub_control_repo,
@@ -102,6 +103,12 @@ def test_discover_hub_control_repo_uses_explicit_or_windows_default_path(tmp_pat
     assert discover_hub_control_repo({"LOCALAPPDATA": str(local_app_data)}) == default_control.resolve()
 
     assert discover_hub_control_repo({HUB_CONTROL_REPO_ENV: ""}) is None
+    assert discover_hub_control_repo(
+        {
+            HUB_CONTROL_REPO_ENV: HUB_CONTROL_REPO_DISABLED,
+            "LOCALAPPDATA": str(local_app_data),
+        }
+    ) is None
 
 
 def test_implementer_registration_preserves_hidden_choice_and_readds_removed_repo(tmp_path: Path) -> None:
