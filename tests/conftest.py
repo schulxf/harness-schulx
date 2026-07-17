@@ -5,6 +5,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 HARNESS_PY = ROOT / "bin" / "harness.py"
 
@@ -19,3 +21,9 @@ def _load_harness_module():
 
 
 harness = _load_harness_module()
+
+
+@pytest.fixture(autouse=True)
+def isolate_external_hub_registry(monkeypatch):
+    """Tests never write to a developer's configured accompaniment panel."""
+    monkeypatch.setenv("HARNESS_HUB_CONTROL_REPO", "")

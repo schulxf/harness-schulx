@@ -141,12 +141,14 @@ from harness_core.git_helpers import (  # noqa: E402
 from harness_core.github_pr import render_github_pr_body  # noqa: E402,F401
 from harness_core.hub_agents import (  # noqa: E402
     hub_agent_name_for_role,
+    sector_for_role,
 )
 from harness_core.hub_auth import hub_action_authorized, hub_local_request_allowed  # noqa: E402
 from harness_core.hub_registry import (  # noqa: E402
     add_hub_repo,
     hub_repo_registry_entries,
     load_hub_repo_registry,
+    register_implementation_repo,
     remove_hub_repo,
     set_hub_repo_hidden,
 )
@@ -311,6 +313,18 @@ from harness_core.wmux import (  # noqa: E402,F401
 )
 
 VERSION = "0.3.0"
+
+
+def register_implementer_path(root: Path) -> None:
+    try:
+        result = register_implementation_repo(root)
+    except OSError as exc:
+        print(f"Aviso: não foi possível adicionar este projeto ao acompanhamento: {exc}")
+        return
+    if result["status"] == "added":
+        print(f"Projeto adicionado automaticamente ao acompanhamento: {root}")
+    elif result.get("hidden"):
+        print("Projeto registrado no acompanhamento e mantido oculto por preferência do usuário.")
 
 
 def command_init(args: argparse.Namespace) -> None:
@@ -749,6 +763,7 @@ def command_start(args: argparse.Namespace) -> None:
         args.task_id,
         skip_preflight=getattr(args, "skip_preflight", False),
     )
+    register_implementer_path(root)
     run_id = (
         datetime.now(timezone.utc).strftime("run-%Y%m%dT%H%M%S%f")
         + f"-{uuid.uuid4().hex[:8]}Z"
@@ -1363,6 +1378,8 @@ def command_dashboard_hub_configure(args: argparse.Namespace) -> None:
 
 def command_agent_register(args: argparse.Namespace) -> None:
     root = prepared_repo(args)
+    if args.sector == "implement" or sector_for_role(args.role) == "implement":
+        register_implementer_path(root)
     cwd = ""
     if args.cwd:
         cwd_path = resolve_repo_path(root, args.cwd)
@@ -2732,9 +2749,12 @@ def command_status(args: argparse.Namespace) -> None:
 def run_compat_command(repo: Path, args: list[str]) -> dict[str, Any]:
     command = [sys.executable, str(Path(__file__).resolve()), "--repo", str(repo), *args]
     started = time.monotonic()
+    environment = dict(os.environ)
+    environment["HARNESS_HUB_CONTROL_REPO"] = ""
     result = subprocess.run(
         command,
         cwd=repo.parent if repo.parent.exists() else None,
+        env=environment,
         capture_output=True,
         text=True,
         encoding="utf-8",

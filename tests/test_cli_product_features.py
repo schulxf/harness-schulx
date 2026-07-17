@@ -387,6 +387,46 @@ def test_event_stream_and_agent_registry_follow_run(tmp_path):
     assert run(["--repo", str(repo), "agent", "list", "--json"]) == 0
 
 
+def test_start_auto_registers_implementer_repo_in_central_hub(tmp_path, monkeypatch):
+    (tmp_path / "control-root").mkdir()
+    (tmp_path / "work-root").mkdir()
+    control = init_repo(tmp_path / "control-root")
+    repo = init_repo(tmp_path / "work-root")
+    monkeypatch.setenv("HARNESS_HUB_CONTROL_REPO", str(control))
+    issue = repo / "issue.md"
+    issue.write_text("# Trabalho visível\n\n## Critérios\n\n- [ ] ok\n", encoding="utf-8")
+    run(["--repo", str(repo), "task", "import", str(issue)])
+    run(["--repo", str(repo), "contract", "TASK-001", "--criteria", "ok"])
+
+    assert run(["--repo", str(repo), "start", "TASK-001"]) == 0
+
+    entries = harness.hub_repo_registry_entries(control)
+    assert {item["path"] for item in entries} == {str(control.resolve()), str(repo.resolve())}
+
+
+def test_registering_builder_agent_auto_registers_repo_in_central_hub(tmp_path, monkeypatch):
+    (tmp_path / "control-root").mkdir()
+    (tmp_path / "work-root").mkdir()
+    control = init_repo(tmp_path / "control-root")
+    repo = init_repo(tmp_path / "work-root")
+    monkeypatch.setenv("HARNESS_HUB_CONTROL_REPO", str(control))
+
+    assert run(
+        [
+            "--repo",
+            str(repo),
+            "agent",
+            "register",
+            "implementador-1",
+            "--role",
+            "builder",
+        ]
+    ) == 0
+
+    entries = harness.hub_repo_registry_entries(control)
+    assert {item["path"] for item in entries} == {str(control.resolve()), str(repo.resolve())}
+
+
 def test_dashboard_hub_repo_registry_and_manual_agent(tmp_path):
     (tmp_path / "control").mkdir()
     (tmp_path / "watched").mkdir()

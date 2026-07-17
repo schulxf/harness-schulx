@@ -42,7 +42,12 @@ def test_skill_required_commands_keep_help_surface():
         assert result.returncode == 0, f"{' '.join(command)}\n{result.stderr}"
 
 
-def test_skill_smoke_runs_through_public_entrypoint(tmp_path):
+def test_skill_smoke_runs_through_public_entrypoint_without_registering_fake_repo(tmp_path, monkeypatch):
+    control = tmp_path / "control"
+    (control / ".harness").mkdir(parents=True)
+    (control / ".harness" / "config.json").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HARNESS_HUB_CONTROL_REPO", str(control))
+
     result = run_cli("compat", "skill-smoke", "--workdir", str(tmp_path), "--json")
 
     assert result.returncode == 0, result.stderr or result.stdout
@@ -50,4 +55,4 @@ def test_skill_smoke_runs_through_public_entrypoint(tmp_path):
     assert payload["ok"] is True
     assert (tmp_path / "skill-compat-repo" / ".harness" / "reports" / "TASK-001.md").is_file()
     assert [item["exit_code"] for item in payload["results"]] == [0] * len(payload["results"])
-
+    assert not (control / ".harness" / "dashboard" / "hub" / "repos.json").exists()
