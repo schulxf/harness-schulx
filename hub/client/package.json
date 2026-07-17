@@ -1,0 +1,8 @@
+{
+  "name": "harness-hub-client",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "serve": "python -m http.server 4173"
+  }
+}

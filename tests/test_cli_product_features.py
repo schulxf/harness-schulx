@@ -162,6 +162,22 @@ def test_security_scan_detects_real_looking_secret_in_tracked_text_file(tmp_path
     assert finding["line"] == 1
 
 
+def test_security_scan_checks_telegram_inbox_json(tmp_path):
+    repo = init_repo(tmp_path)
+    token = "ghp_" + "fedcba9876543210fedcba9876543210abcd"
+    inbox = repo / ".harness" / "inbox" / "telegram" / "tg-1-1.json"
+    inbox.write_text(json.dumps({"text": f"GITHUB_TOKEN={token}"}), encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc:
+        run(["--repo", str(repo), "security", "scan"])
+
+    assert exc.value.code == 1
+    report = read_json(repo / ".harness" / "security" / "scan-latest.json")
+    assert report["inbox_files_scanned"] == 1
+    finding = next(item for item in report["findings"] if "tg-1-1.json" in item["path"])
+    assert finding["kind"] == "github_token"
+
+
 def test_plugin_registry_add_and_list(tmp_path, capsys):
     repo = init_repo(tmp_path)
 
@@ -187,6 +203,63 @@ def test_plugin_registry_add_and_list(tmp_path, capsys):
     assert registry["plugins"][0]["name"] == "greptile-review"
     assert registry["plugins"][0]["path"] == "skills/greptile-review"
     assert registry["plugins"][0]["description"] == "Review agent"
+
+
+def test_plugin_run_requires_review_and_uses_safe_substitution(tmp_path, capsys):
+    repo = init_repo(tmp_path)
+
+    assert run(
+        [
+            "--repo",
+            str(repo),
+            "plugin",
+            "add",
+            "audit",
+            "--command",
+            "noop {repo} {task_id} {event}",
+            "--event",
+            "done",
+        ]
+    ) == 0
+
+    with pytest.raises(SystemExit) as exc:
+        run(["--repo", str(repo), "plugin", "run", "done", "--task-id", "TASK-123"])
+    assert "bloqueada" in str(exc.value)
+
+    assert run(
+        [
+            "--repo",
+            str(repo),
+            "plugin",
+            "run",
+            "done",
+            "--task-id",
+            "TASK-123",
+            "--dry-run",
+        ]
+    ) == 0
+    out = capsys.readouterr().out
+    assert f"noop {repo} TASK-123 done" in out
+
+
+def test_plugin_run_rejects_unknown_placeholder(tmp_path):
+    repo = init_repo(tmp_path)
+
+    assert run(
+        [
+            "--repo",
+            str(repo),
+            "plugin",
+            "add",
+            "audit",
+            "--command",
+            "noop {repo} {branch}",
+        ]
+    ) == 0
+
+    with pytest.raises(SystemExit) as exc:
+        run(["--repo", str(repo), "plugin", "run", "done", "--dry-run"])
+    assert "Placeholder de plugin desconhecido: {branch}" in str(exc.value)
 
 
 def test_memory_remember_and_list(tmp_path, capsys):
@@ -259,12 +332,175 @@ def test_dashboard_hub_generation_for_multiple_repos(tmp_path):
 
     hub = repo_a / ".harness" / "dashboard" / "hub" / "index.html"
     state_path = repo_a / ".harness" / "dashboard" / "hub" / "hub-state.json"
+    css_path = repo_a / ".harness" / "dashboard" / "hub" / "hub.css"
+    js_path = repo_a / ".harness" / "dashboard" / "hub" / "hub.js"
+    presentation_path = repo_a / ".harness" / "dashboard" / "hub" / "presentation.js"
     assert hub.is_file()
     assert state_path.is_file()
+    assert css_path.is_file()
+    assert js_path.is_file()
+    assert presentation_path.is_file()
     html = hub.read_text(encoding="utf-8")
+    css = css_path.read_text(encoding="utf-8")
+    js = js_path.read_text(encoding="utf-8")
     state = read_json(state_path)
-    assert "Harness Hub" in html
-    assert "room" in html
+    assert "Harness — Acompanhamento" in html
+    assert 'href="hub.css"' in html
+    assert 'src="presentation.js"' in html
+    assert 'src="hub.js"' in html
+    assert 'id="hub-bootstrap"' in html
+    assert "renderOverview" in js
+    assert "Gerenciar projetos" in js
+    assert "/api/repos/add" in js
+    assert "/api/repos/hide" in js
+    assert "/api/repos/show" in js
+    assert "/api/repos/remove" in js
+    assert "A pasta e seus arquivos continuarão no computador" in js
+    assert 'addEventListener("events", scheduleRefresh)' in js
+    assert "project-card" in css
+    assert "project-manager" in css
+    assert "pixel" not in html.lower()
     assert state["repo_count"] == 2
     assert {repo["project"] for repo in state["repos"]} == {"test"}
     assert state["total_tasks"] == 2
+    assert state["repos"][0]["agents"][0]["state"] in {"idle", "working"}
+    assert state["repos"][0]["agents"][0]["speech"]
+    assert state["repos"][0]["presentation"]["implementation"]
+
+
+def test_event_stream_and_agent_registry_follow_run(tmp_path):
+    repo = init_repo(tmp_path)
+    issue = repo / "issue.md"
+    issue.write_text("# Agent task\n\n## Criterios\n\n- [ ] ok\n", encoding="utf-8")
+    run(["--repo", str(repo), "task", "import", str(issue)])
+    run(["--repo", str(repo), "contract", "TASK-001", "--criteria", "ok"])
+
+    assert run(["--repo", str(repo), "start", "TASK-001"]) == 0
+
+    events = (repo / ".harness" / "events.jsonl").read_text(encoding="utf-8")
+    assert "run_started" in events
+    registry = read_json(repo / ".harness" / "agents" / "registry.json")
+    assert registry["agents"][0]["task_id"] == "TASK-001"
+    assert registry["agents"][0]["state"] == "working"
+
+    assert run(["--repo", str(repo), "events", "list", "--json"]) == 0
+    assert run(["--repo", str(repo), "agent", "list", "--json"]) == 0
+
+
+def test_dashboard_hub_repo_registry_and_manual_agent(tmp_path):
+    (tmp_path / "control").mkdir()
+    (tmp_path / "watched").mkdir()
+    control = init_repo(tmp_path / "control")
+    watched = init_repo(tmp_path / "watched")
+
+    assert run(["--repo", str(control), "dashboard", "hub-add-repo", str(watched)]) == 0
+    assert run(
+        [
+            "--repo",
+            str(watched),
+            "agent",
+            "register",
+            "agent-a",
+            "--role",
+            "builder",
+            "--state",
+            "working",
+            "--speech",
+            "Montando teste local.",
+        ]
+    ) == 0
+    assert run(["--repo", str(control), "dashboard", "hub"]) == 0
+
+    state = read_json(control / ".harness" / "dashboard" / "hub" / "hub-state.json")
+    assert state["repo_count"] == 2
+    watched_state = next(repo for repo in state["repos"] if repo["root"] == str(watched))
+    assert watched_state["agents"][0]["id"] == "agent-a"
+    assert watched_state["agents"][0]["speech"] == "Montando teste local."
+
+
+def test_dashboard_hub_can_hide_show_and_remove_repo_without_deleting_it(tmp_path):
+    (tmp_path / "control").mkdir()
+    (tmp_path / "watched").mkdir()
+    control = init_repo(tmp_path / "control")
+    watched = init_repo(tmp_path / "watched")
+    marker = watched / "preservar.txt"
+    marker.write_text("conteúdo do usuário", encoding="utf-8")
+
+    assert run(["--repo", str(control), "dashboard", "hub-add-repo", str(watched)]) == 0
+    assert run(["--repo", str(control), "dashboard", "hub-hide-repo", str(watched)]) == 0
+    args = type("Args", (), {"repo": str(control), "watch_repo": []})()
+    assert str(watched.resolve()) not in [str(path) for path in harness.hub_repo_paths(args)]
+
+    assert run(["--repo", str(control), "dashboard", "hub-show-repo", str(watched)]) == 0
+    assert str(watched.resolve()) in [str(path) for path in harness.hub_repo_paths(args)]
+
+    assert run(["--repo", str(control), "dashboard", "hub-remove-repo", str(watched)]) == 0
+    assert marker.read_text(encoding="utf-8") == "conteúdo do usuário"
+
+
+def test_dashboard_hub_configure_and_agent_sidecar_commands(tmp_path):
+    repo = init_repo(tmp_path)
+
+    assert run(
+        [
+            "--repo",
+            str(repo),
+            "dashboard",
+            "hub-configure",
+            "--allow-remote-execution",
+            "--max-agents",
+            "3",
+            "--default-cli",
+            "claude",
+        ]
+    ) == 0
+    config = read_json(repo / ".harness" / "config.json")
+    assert config["hub"]["allow_remote_execution"] is True
+    assert config["hub"]["max_agents"] == 3
+    assert config["hub"]["default_cli"] == "claude"
+
+    assert run(
+        [
+            "--repo",
+            str(repo),
+            "agent",
+            "register",
+            "agent-a",
+            "--role",
+            "builder",
+            "--state",
+            "idle",
+            "--cli",
+            "shell",
+            "--sector",
+            "implement",
+            "--pty-id",
+            "pty-a",
+            "--cwd",
+            ".",
+            "--spawned-by",
+            "ui",
+        ]
+    ) == 0
+    assert run(["--repo", str(repo), "agent", "register", "agent-b", "--role", "reviewer"]) == 0
+    assert run(["--repo", str(repo), "agent", "message", "agent-a", "--to", "agent-b", "--text", "Revisa isso"]) == 0
+    assert run(["--repo", str(repo), "agent", "kill", "agent-a", "--reason", "Teste encerrado"]) == 0
+
+    registry = read_json(repo / ".harness" / "agents" / "registry.json")
+    agent_a = next(agent for agent in registry["agents"] if agent["id"] == "agent-a")
+    assert agent_a["state"] == "done"
+    assert agent_a["cli"] == "shell"
+    assert agent_a["pty_id"] == ""
+    messages = (repo / ".harness" / "agents" / "messages.jsonl").read_text(encoding="utf-8")
+    assert "Revisa isso" in messages
+    events = (repo / ".harness" / "events.jsonl").read_text(encoding="utf-8")
+    assert "agent_spawned" in events
+    assert "agent_message" in events
+    assert "agent_killed" in events
+
+
+def test_wmux_state_handles_unavailable_pipe(monkeypatch):
+    monkeypatch.setattr("harness_core.wmux.wmux_pipe_path", lambda: r"\\.\pipe\missing-harness-test")
+    state = harness.collect_wmux_state()
+    assert state["available"] is False
+    assert state["error"]

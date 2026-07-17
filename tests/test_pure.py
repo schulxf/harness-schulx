@@ -6,6 +6,7 @@ import re
 
 import pytest
 
+from harness_core import codex_exec, sensors, storage
 from tests.conftest import harness
 
 
@@ -129,6 +130,108 @@ def test_telegram_config_merges_defaults():
     assert policy["openai_media"]["audio_model"]
 
 
+def test_telegram_allowlist_fails_closed_and_remote_execution_is_explicit():
+    assert harness.telegram_chat_allowed({"telegram": {}}, "123") is False
+    assert harness.telegram_chat_allowed({"telegram": {"chat_ids": ["123"]}}, "123") is True
+    assert (
+        harness.telegram_chat_allowed(
+            {"telegram": {"chat_ids": ["123"], "allowed_chat_ids": ["456"]}},
+            "123",
+        )
+        is False
+    )
+    assert (
+        harness.telegram_chat_allowed(
+            {"telegram": {"chat_ids": ["123"], "allowed_chat_ids": ["456"]}},
+            "456",
+        )
+        is True
+    )
+    assert harness.telegram_remote_execution_allowed({"telegram": {"chat_ids": ["123"]}}) is False
+    assert (
+        harness.telegram_remote_execution_allowed(
+            {"telegram": {"allow_remote_execution": True, "allowed_chat_ids": ["123"]}}
+        )
+        is True
+    )
+
+
+def test_telegram_update_context_and_offset_helpers():
+    context = harness.telegram_update_context(
+        {
+            "update_id": 41,
+            "message": {
+                "chat": {"id": 123},
+                "text": "  /codex oi  ",
+            },
+        }
+    )
+
+    assert context["update_id"] == 41
+    assert context["chat_id"] == "123"
+    assert context["text"] == "  /codex oi  "
+    assert context["stripped"] == "/codex oi"
+    assert harness.advance_telegram_offset(None, 41) == 42
+    assert harness.advance_telegram_offset(100, 41) == 100
+
+
+def test_telegram_poll_updates_builds_standard_payload(monkeypatch):
+    calls = []
+
+    def fake_api_call(token, method, payload, timeout):
+        calls.append((token, method, payload, timeout))
+        return [{"update_id": 1}]
+
+    monkeypatch.setattr("harness_core.telegram.telegram_api_call", fake_api_call)
+
+    assert harness.telegram_poll_updates("tok", timeout=5, limit=2, offset=9) == [{"update_id": 1}]
+    assert calls == [
+        (
+            "tok",
+            "getUpdates",
+            {
+                "timeout": 5,
+                "limit": 2,
+                "allowed_updates": ["message", "edited_message"],
+                "offset": 9,
+            },
+            20,
+        )
+    ]
+
+
+def test_hub_action_auth_requires_loopback_and_token():
+    assert harness.hub_local_request_allowed("127.0.0.1") is True
+    assert harness.hub_local_request_allowed("192.168.0.10") is False
+    assert harness.hub_action_authorized("127.0.0.1", "token", "token") is True
+    assert harness.hub_action_authorized("127.0.0.1", "", "token") is False
+    assert harness.hub_action_authorized("192.168.0.10", "token", "token") is False
+
+
+def test_read_jsonl_tail_reads_only_recent_records(tmp_path):
+    path = tmp_path / "events.jsonl"
+    for index in range(20):
+        storage.append_jsonl(path, {"index": index})
+
+    assert [item["index"] for item in storage.read_jsonl_tail(path, 3)] == [17, 18, 19]
+
+
+def test_render_dashboard_hub_html_uses_static_assets_and_safe_bootstrap_json():
+    html = harness.render_dashboard_hub_html(
+        {"repos": [{"project": "</script><!--"}], "action_token": "tok"},
+        refresh_seconds=0,
+    )
+
+    assert 'href="hub.css"' in html
+    assert 'src="hub.js"' in html
+    assert 'id="hub-bootstrap"' in html
+    assert 'data-refresh-ms="1000"' in html
+    assert "<\\/script>" in html
+    assert "<\\!--" in html
+    assert "<style>" not in html
+    assert "function render()" not in html
+
+
 def test_render_plain_summary_is_nontechnical():
     summary = harness.render_plain_summary(
         {"task_id": "TASK-001", "title": "Login"},
@@ -146,7 +249,7 @@ def test_render_plain_summary_is_nontechnical():
 
 
 def test_build_codex_exec_argv_new_session(monkeypatch, tmp_path):
-    monkeypatch.setattr(harness.shutil, "which", lambda _: "codex")
+    monkeypatch.setattr(codex_exec.shutil, "which", lambda _: "codex")
     out = tmp_path / "out.txt"
     argv = harness.build_codex_exec_argv(
         tmp_path,
@@ -164,7 +267,7 @@ def test_build_codex_exec_argv_new_session(monkeypatch, tmp_path):
 
 
 def test_build_codex_exec_argv_resume_last(monkeypatch, tmp_path):
-    monkeypatch.setattr(harness.shutil, "which", lambda _: "codex")
+    monkeypatch.setattr(codex_exec.shutil, "which", lambda _: "codex")
     out = tmp_path / "out.txt"
     argv = harness.build_codex_exec_argv(tmp_path, out, resume_last=True)
     assert argv[:4] == ["codex", "exec", "resume", "--last"]
@@ -203,11 +306,11 @@ def test_mirror_message_from_tool_call_when_enabled():
 
 def test_sensor_tiers_include_legacy_full():
     contract = {"required_sensors": ["npm test"]}
-    tiers = harness.normalize_sensor_tiers(contract)
+    tiers = sensors.normalize_sensor_tiers(contract)
     assert tiers["smoke"] == []
     assert tiers["affected"] == []
     assert tiers["full"] == ["npm test"]
-    assert harness.sensors_for_tier(contract, "all") == ["npm test"]
+    assert sensors.sensors_for_tier(contract, "all") == ["npm test"]
 
 
 def test_blocking_findings_from_review_detects_p0_p1():
@@ -255,11 +358,11 @@ def test_render_evaluation_markdown_without_gaps_uses_placeholder():
 
 
 def test_split_sensor_command_simple():
-    assert harness.split_sensor_command("npm test") == ["npm", "test"]
+    assert sensors.split_sensor_command("npm test") == ["npm", "test"]
 
 
 def test_split_sensor_command_handles_flags():
-    assert harness.split_sensor_command("npm run typecheck") == [
+    assert sensors.split_sensor_command("npm run typecheck") == [
         "npm",
         "run",
         "typecheck",
@@ -268,16 +371,16 @@ def test_split_sensor_command_handles_flags():
 
 def test_resolve_sensor_argv_passthrough_when_not_found():
     # An obviously-nonexistent command shouldn't blow up; it just returns argv as-is.
-    out = harness.resolve_sensor_argv(["__definitely_not_a_real_binary__", "--flag"])
+    out = sensors.resolve_sensor_argv(["__definitely_not_a_real_binary__", "--flag"])
     assert out == ["__definitely_not_a_real_binary__", "--flag"]
 
 
 def test_resolve_sensor_argv_empty():
-    assert harness.resolve_sensor_argv([]) == []
+    assert sensors.resolve_sensor_argv([]) == []
 
 
 def test_make_sensor_result_includes_extras():
-    r = harness.make_sensor_result(
+    r = sensors.make_sensor_result(
         command="npm test",
         argv=["npm", "test"],
         resolved_argv=["/usr/bin/npm", "test"],

@@ -63,7 +63,7 @@ terminal.
 Core v0.3 surfaces:
 
 - local dashboard for queue, active run, sensors, checkpoints and artifacts;
-- pixel-art multi-repo hub for watching several Harness projects as one map;
+- multi-project accompaniment hub for understanding current work, progress and attention points at a glance;
 - task queue with one active implementation task per repo;
 - supervisor that starts runs, watches budgets, records checkpoints and blocks
   unsafe transitions;
@@ -108,8 +108,9 @@ On Windows, you can also use the PowerShell wrapper:
 For development tests:
 
 ```powershell
-python -m pip install pytest
-python -m pytest tests/
+python -m pip install -r requirements-dev.txt
+python -m ruff check bin/harness.py harness_core tests
+python -m pytest tests/ --cov=harness --cov=harness_core --cov-report=term-missing
 ```
 
 ## Quick Start
@@ -393,11 +394,23 @@ media/
 Large artifacts remain local by default. Reports may link to them without
 copying them into git.
 
-### Pixel-Art Multi-Repo Hub
+### Multi-Project Accompaniment Hub
 
-The hub is a local top-down operations map. Each watched repo becomes a room,
-and active work appears as small agent sprites moving around consoles, stations
-and the central hub core.
+The hub is a calm, non-technical view of work happening across local Harness
+projects. Each project card explains the current implementation, the active
+task, its factual position in the plan, what is happening now and whether human
+attention is needed. Open a card to follow the full task journey, completed
+results and recent updates without exposing commands, logs or file details.
+
+Register repos once:
+
+```powershell
+python $HARNESS --repo $APP_REPO dashboard hub-add-repo "C:\repo-a" "C:\repo-b"
+python $HARNESS --repo $APP_REPO dashboard hub-hide-repo "C:\repo-b"
+python $HARNESS --repo $APP_REPO dashboard hub-show-repo "C:\repo-b"
+python $HARNESS --repo $APP_REPO dashboard hub-remove-repo "C:\repo-b"
+python $HARNESS --repo $APP_REPO dashboard hub-list-repos
+```
 
 Generate a static hub:
 
@@ -423,8 +436,40 @@ http://127.0.0.1:8899/
 ```
 
 `hub-serve` recalculates `hub-state.json` from each repo's `.harness/` whenever
-the browser polls it, so the map updates as tasks move through queue, build,
-review, security and report states.
+the browser polls it. The selected project remains open while the interface
+updates task progress, review states and attention messages.
+
+Harness actions also write a shared event stream:
+
+```text
+.harness/events.jsonl
+.harness/agents/registry.json
+```
+
+The hub uses that stream for the clickable timeline and uses the registry to
+show real agents when they register themselves:
+
+```powershell
+python $HARNESS --repo $APP_REPO agent register builder-1 `
+  --role builder `
+  --task-id TASK-001 `
+  --speech "Working on the failing test."
+
+python $HARNESS --repo $APP_REPO agent heartbeat builder-1 `
+  --speech "Tests are green; preparing review."
+```
+
+If wmux is running, `hub-serve` also exposes a local wmux bridge:
+
+- list visible wmux panes, terminal surfaces and wmux agents;
+- focus an existing wmux terminal from the hub;
+- open a new wmux terminal for the selected repo;
+- send a short command or message to the active terminal;
+- read the active terminal screen when the installed wmux renderer supports
+  screen serialization.
+
+The bridge uses the local wmux named pipe (`WMUX_PIPE`), binds actions to the
+local server token and logs every hub terminal action into `.harness/events.jsonl`.
 
 ### Budgets And Profiles
 
@@ -545,6 +590,15 @@ python $HARNESS --repo $APP_REPO telegram configure `
   --allowed-chat-id "1832050069"
 ```
 
+Telegram saves inbound messages only from configured chats. Remote Codex
+execution is disabled by default; enable it separately only for trusted chats:
+
+```powershell
+python $HARNESS --repo $APP_REPO telegram configure `
+  --allow-remote-execution `
+  --allowed-chat-id "1832050069"
+```
+
 Send a test message:
 
 ```powershell
@@ -575,6 +629,10 @@ Run a combined mirror and inbox bridge:
 python $HARNESS --repo $APP_REPO telegram bridge --include-tools
 ```
 
+`telegram bridge` also forwards new Harness events from `.harness/events.jsonl`
+unless you pass `--no-harness-events`. This keeps Telegram, the hub and CLI
+status aligned on the same event stream.
+
 By default, bridge messages are queued in:
 
 ```text
@@ -582,9 +640,29 @@ By default, bridge messages are queued in:
 ```
 
 Use `/codex <message>` in Telegram when you intentionally want to call Codex in
-parallel through `codex exec resume --last`.
+parallel through `codex exec resume --last`. This requires
+`allow_remote_execution=true` and an authorized chat.
 
 Read the full guide in [docs/TELEGRAM.md](docs/TELEGRAM.md).
+
+## Skill Compatibility
+
+`bin/harness.py` is the stable entrypoint used by the Harness Runner skill. The
+refactor is allowed to move implementation code, but not to remove that public
+surface.
+
+Check the protected command surface:
+
+```powershell
+python $HARNESS compat manifest
+```
+
+Run a local safety smoke that creates a fake repo and exercises the main skill
+flow through `bin/harness.py`:
+
+```powershell
+python $HARNESS compat skill-smoke
+```
 
 ## Repository Layout
 
@@ -645,7 +723,7 @@ status               Show project state
 telegram             Telegram integration commands
 ```
 
-v0.3 command families also include dashboard, pixel-art hub, queue, supervisor,
+v0.3 command families also include dashboard, multi-project hub, queue, supervisor,
 checkpoint, resume, github, profile, artifacts, memory, plugin and security
 operations. Some installations expose these through plugins while the core CLI
 remains local and deterministic.
@@ -655,7 +733,8 @@ remains local and deterministic.
 Run tests:
 
 ```powershell
-python -m pytest tests/
+python -m pip install -r requirements-dev.txt
+python -m pytest tests/ --cov=harness --cov=harness_core --cov-report=term-missing
 ```
 
 Run static analysis and compile checks:
@@ -665,7 +744,8 @@ python -m ruff check .
 python -m compileall -q bin .github\scripts tests
 ```
 
-The project intentionally has no runtime dependencies. Tests use `pytest`.
+The project intentionally has no runtime dependencies. Development checks use
+`pytest`, `pytest-cov` and `ruff`.
 
 ## Security Notes
 

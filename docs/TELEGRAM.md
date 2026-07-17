@@ -33,6 +33,15 @@ python $HARNESS --repo $APP_REPO telegram configure `
   --allowed-chat-id "1832050069"
 ```
 
+By default, Telegram can receive notifications and save inbox messages, but it
+cannot start Codex execution. Enable that separately only for trusted chats:
+
+```powershell
+python $HARNESS --repo $APP_REPO telegram configure `
+  --allow-remote-execution `
+  --allowed-chat-id "1832050069"
+```
+
 Test outbound messages:
 
 ```powershell
@@ -79,6 +88,9 @@ Sends Telegram messages to Codex through `codex exec`.
 ```powershell
 python $HARNESS --repo $APP_REPO telegram codex --resume-last
 ```
+
+This mode refuses to start unless `allow_remote_execution` is enabled and at
+least one authorized chat is configured.
 
 This is useful when the Telegram gateway owns the interaction. It does not type
 into an already-open Codex TUI.
@@ -154,7 +166,9 @@ Without `OPENAI_API_KEY`, media is still saved and referenced in the inbox.
 ## Safety
 
 - Do not commit bot tokens.
-- Use `allowed_chat_id`.
+- Use `allowed_chat_id`; inbound Telegram fails closed when no chat is allowed.
+- Keep remote execution disabled unless you intentionally need Telegram to call
+  Codex.
 - Prefer `bridge` default queue mode during long autonomous work.
 - Use `/codex` only when intentional.
 - Use `--bypass` only in a trusted environment.

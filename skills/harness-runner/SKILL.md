@@ -34,6 +34,22 @@ python $HARNESS --repo $APP_REPO <comando>
 `init` nao cria o diretorio do repo por padrao. Use `init --create` apenas
 quando a criacao for intencional.
 
+## Compatibilidade
+
+`bin/harness.py` e a sintaxe documentada nesta skill sao superficie publica. Se
+o Harness for refatorado, esse entrypoint deve continuar funcionando.
+
+Antes de confiar numa instalacao nova ou numa branch refatorada, rode:
+
+```powershell
+python $HARNESS compat manifest
+python $HARNESS compat skill-smoke
+```
+
+`compat skill-smoke` cria um repo falso em diretorio temporario e executa o
+fluxo principal da skill pelo entrypoint publico. Se falhar, nao use a branch
+para trabalho autonomo ate corrigir a compatibilidade.
+
 ## Seguranca De Branch
 
 Comandos que escrevem arquivos ou rodam sensores sao bloqueados em `main`,

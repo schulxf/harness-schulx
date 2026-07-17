@@ -51,9 +51,17 @@ normal dashboard, but renders it as a top-down operations map:
 
 - each watched repo is a room;
 - queue/build/review/security/report are visible as room phases;
-- agents are small sprites moving inside the rooms;
+- agents are pixel characters with speech bubbles, idle walking and working
+  animation;
+- real agents can register in `.harness/agents/registry.json`; synthetic agents
+  are only a fallback when no registry entry exists;
 - the central core summarizes all monitored repos;
-- clicking a room opens task, queue, checkpoint, run and security details.
+- clicking a room opens task, queue, checkpoint, run and security details;
+- clicking an agent opens the task/state summary for that agent;
+- the inspection panel shows recent `.harness/events.jsonl` timeline entries;
+- when wmux is running, `hub-serve` can list/focus wmux terminals, open a
+  terminal for the selected repo, send text to the active terminal and read
+  screen text when the wmux renderer supports it.
 
 Commands:
 
@@ -66,11 +74,44 @@ python <harness.py> --repo C:\control-repo dashboard hub-serve `
   --watch-repo C:\repo-a `
   --watch-repo C:\repo-b `
   --port 8899
+
+python <harness.py> --repo C:\control-repo dashboard hub-add-repo C:\repo-a C:\repo-b
+python <harness.py> --repo C:\control-repo dashboard hub-hide-repo C:\repo-b
+python <harness.py> --repo C:\control-repo dashboard hub-show-repo C:\repo-b
+python <harness.py> --repo C:\control-repo dashboard hub-remove-repo C:\repo-b
+python <harness.py> --repo C:\control-repo dashboard hub-list-repos
+python <harness.py> --repo C:\repo-a agent register builder-1 --role builder --task-id TASK-001
+python <harness.py> --repo C:\repo-a events list --limit 20
 ```
 
 The control repo is where the hub HTML is written. Watched repos are read-only
 inputs. `hub-serve` refreshes `hub-state.json` on demand, so the browser can
 poll without a database, websocket server or external service.
+
+The wmux bridge is local-only. It reads `WMUX_PIPE`/`WMUX_SURFACE_ID` from the
+environment and talks to the wmux named pipe directly, avoiding the slower CLI
+timeout path for live polling. Mutating wmux actions require the local
+`hub-serve` action token and are logged back to `.harness/events.jsonl`.
+
+## Event Stream And Agents
+
+Every task, queue, run, sensor, review, report, Telegram and hub-control action
+should append a small JSON object to:
+
+```text
+.harness/events.jsonl
+```
+
+That file is the shared operational feed for CLI status, the pixel hub and
+Telegram. Long-running agents can also update:
+
+```text
+.harness/agents/registry.json
+```
+
+The registry stores `agent_id`, role, state, task, wmux surface, speech bubble
+text and heartbeat. The hub reads it first; inferred/synthetic agents are only a
+fallback for older repos.
 
 ## Task Queue
 
