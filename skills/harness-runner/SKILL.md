@@ -65,10 +65,11 @@ python <harness.py> --repo $APP_REPO --allow-main init
 12. Gere handoffs com `evaluate <task_id>`.
 13. Spawn um avaliador com `fork_context=false` usando apenas `evaluator-agent-handoff.md`.
 14. Spawn um reviewer Greptile-style com `fork_context=false` usando apenas `greptile-reviewer-agent-handoff.md`.
-15. Rode ou registre security scan quando o profile exigir.
-16. Consolide os sinais usando `review-consolidation.md`.
-17. Registre a decisao com `evaluate <task_id> --status ...`.
-18. Gere `report <task_id>` e alimente memoria de projeto com o resumo aprovado.
+15. Rode `security scan --task-id <task_id>` e preserve o relatório da run.
+16. Revise ortografia, acentuação e clareza em PT-BR e registre com `ptbr-review`.
+17. Consolide os sinais usando `review-consolidation.md`.
+18. Registre a decisão com `evaluate <task_id> --status ... --review-file ...`.
+19. Gere `report <task_id>` e alimente memória de projeto com o resumo aprovado.
 
 ## v0.3 Superficies
 
@@ -196,6 +197,9 @@ handoffs. Use `full-pass TASK-001 --reviewed` para a rodada final.
 Sensores rodam sem shell por padrao. Use `--allow-shell` apenas quando um
 comando revisado depender de comportamento de shell.
 
+A revisão é vinculada ao digest do tier, da lista exata de comandos e do modo
+de shell. Qualquer override diferente exige uma nova confirmação `--reviewed`.
+
 ## Avaliacao E Revisao
 
 Criar brief e handoffs:
@@ -250,7 +254,9 @@ handoffs de novo e finalize apenas depois de `sensors --tier full`.
 Registrar decisao:
 
 ```powershell
-python <harness.py> --repo $APP_REPO evaluate TASK-001 --status pass --notes "Evidencia aceita."
+python <harness.py> --repo $APP_REPO security scan --task-id TASK-001 --fail-on-findings
+python <harness.py> --repo $APP_REPO ptbr-review TASK-001 --status pass --notes "Ortografia, acentuação e clareza conferidas."
+python <harness.py> --repo $APP_REPO evaluate TASK-001 --status pass --notes "Evidência aceita." --review-file reviewer-output.md
 python <harness.py> --repo $APP_REPO evaluate TASK-001 --status fail --gap "Falta teste de persistencia."
 ```
 
@@ -326,12 +332,12 @@ Midias sao salvas em `.harness/inbox/telegram/media/`.
 - Salve checkpoints antes de pausar, trocar de agente, rodar revisao longa ou pedir decisao humana.
 - Resuma pela ultima evidencia em `.harness`, nao por lembranca do chat.
 - Nao expanda escopo a partir de comentarios do avaliador.
-- Nao marque task como concluida sem evidencia de sensores.
+- Não marque task como concluída sem sensores, security scan, revisão PT-BR e parecer do reviewer.
 - Prefira sensores deterministicos antes de revisao semantica.
 - O implementador pode se auto-checar, mas nao deve se autoaprovar; use sempre um agente avaliador separado.
 - O reviewer Greptile-style revisa risco do diff, nao substitui o avaliador contratual.
 - Use `review-consolidation.md`: `FAIL`, `P0`, `P1` na superficie alterada e security critical bloqueiam.
-- Use security scanner antes do pass em profile `standard` ou `deep`.
+- Use security scanner vinculado à run antes do pass em todos os profiles padrão.
 - Se GitHub helpers estiverem configurados, gere PR body a partir do contrato, sensores, report e findings aceitos.
 - Plugins devem declarar comandos, arquivos escritos, acesso de rede e secrets usados.
 - Se sensores falharem, crie o menor fix brief possivel e rode novamente.
@@ -355,6 +361,7 @@ Vou rodar o Harness para uma issue:
 8. criar brief/handoffs do avaliador e do reviewer Greptile-style
 9. spawnar avaliador sem contexto da sessao atual
 10. spawnar reviewer Greptile-style sem contexto da sessao atual
-11. rodar/registrar security scan quando exigido
-12. consolidar sinais e registrar avaliacao/relatorio
+11. rodar security scan vinculado à run
+12. revisar ortografia, acentuação e clareza em PT-BR
+13. consolidar sinais e registrar avaliação/relatório com o parecer do reviewer
 ```

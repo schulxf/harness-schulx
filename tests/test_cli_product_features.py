@@ -150,7 +150,7 @@ def test_security_scan_detects_real_looking_secret_in_tracked_text_file(tmp_path
     subprocess.run(["git", "add", "safe.txt", "settings.py"], cwd=repo, check=True)
 
     with pytest.raises(SystemExit) as exc:
-        run(["--repo", str(repo), "security", "scan"])
+        run(["--repo", str(repo), "security", "scan", "--fail-on-findings"])
 
     assert exc.value.code == 1
     report = read_json(repo / ".harness" / "security" / "scan-latest.json")

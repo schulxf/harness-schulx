@@ -23,6 +23,8 @@ Issue/Prompt
   -> Quick sensors
   -> Implementation
   -> Full sensors
+  -> Security scan
+  -> PT-BR text review
   -> Evaluator + Greptile-style reviewer in parallel
   -> Consolidation
   -> Plain-language report
@@ -88,6 +90,13 @@ No runtime package dependencies are required. You only need Python 3.10+.
 git clone https://github.com/schulxf/harness-schulx.git
 cd harness-schulx
 python .\bin\harness.py --help
+```
+
+To install the `harness-schulx` command in a virtual environment:
+
+```powershell
+python -m pip install -e .
+harness-schulx --help
 ```
 
 On Windows, you can also use the PowerShell wrapper:
@@ -157,10 +166,18 @@ Before final approval, run the full loop:
 python $HARNESS --repo $APP_REPO full-pass TASK-001 --reviewed
 ```
 
-Register the final decision and write the report:
+Record the security and PT-BR checks, then register the independent decisions:
 
 ```powershell
-python $HARNESS --repo $APP_REPO evaluate TASK-001 --status pass --notes "Criterios atendidos e sensores passaram."
+python $HARNESS --repo $APP_REPO security scan --task-id TASK-001 --fail-on-findings
+python $HARNESS --repo $APP_REPO ptbr-review TASK-001 --status pass `
+  --reviewer "nome do revisor" `
+  --notes "Ortografia, acentuação e clareza conferidas."
+python $HARNESS --repo $APP_REPO evaluate TASK-001 --status pass `
+  --evaluator "agente avaliador" `
+  --notes "Critérios atendidos e sensores passaram." `
+  --reviewer "agente reviewer" `
+  --review-file ".harness\runs\TASK-001\RUN\reviewer-output.md"
 python $HARNESS --repo $APP_REPO report TASK-001
 ```
 
@@ -175,12 +192,14 @@ python $HARNESS --repo $APP_REPO report TASK-001
 7. Save checkpoints after meaningful progress.
 8. Run quick sensors during the fix loop.
 9. Run full sensors before approval.
-10. Generate evaluator and reviewer handoffs.
-11. Spawn the evaluator and Greptile-style reviewer in parallel.
-12. Consolidate both answers.
-13. Fix P0/P1 in the same task.
-14. Register `pass`, `fail`, or `needs-work`.
-15. Generate the report and artifact index.
+10. Run the security scan for the current run.
+11. Review spelling, accentuation and clarity of all PT-BR text.
+12. Generate evaluator and reviewer handoffs.
+13. Spawn the evaluator and Greptile-style reviewer in parallel.
+14. Consolidate both answers and record the reviewer output.
+15. Fix P0/P1 in the same task.
+16. Register `pass`, `fail`, or `needs-work`.
+17. Generate the report and artifact index.
 
 ## Core Concepts
 
@@ -417,10 +436,10 @@ standard  normal feature slice, quick + full sensors
 deep      risky change, extra docs, evaluator + reviewer + security scan
 ```
 
-Budgets should track at least elapsed time, token budget, command budget and
-external-review budget. Budget exhaustion does not mean success or failure by
-itself; it moves the run to `needs_work` unless the failure policy says
-otherwise.
+The CLI snapshots the selected profile and budget when a run starts. Elapsed
+time and fix-attempt limits are hard completion gates: exceeding either blocks
+`pass` until the run is explicitly replanned. Token and command usage can still
+be recorded by integrations, but are not inferred by the core CLI.
 
 ### Project Memory
 
@@ -451,6 +470,12 @@ state. Helpers may:
 - attach reviewer/evaluator summaries;
 - create follow-up issues for non-blocking P2 findings.
 
+This repository also includes a PR template and an automation that validates a
+short, plain-language summary, requires the PT-BR review checkbox and creates or
+updates one simple comment on every new PR. The automation reads only the event
+and the workflow from the default branch; it never checks out or executes code
+from the PR.
+
 ### Plugin Registry
 
 The plugin registry records optional integrations available to a repo:
@@ -465,7 +490,18 @@ commands it can run, what files it writes and whether it can access secrets.
 
 ### Security Scanner
 
-The security scanner is a gate before final approval. It should check:
+The built-in security scanner is a gate before final approval. It checks:
+
+- common secret and credential patterns in tracked text files;
+- untracked text files too when `--include-untracked` or `--task-id` is used;
+- the exact scan result tied to the current run when `--task-id` is provided.
+
+Any finding in the run-local report blocks final approval. Use
+`--fail-on-findings` when the scan itself must return a failing exit code, such
+as in CI.
+
+Optional scanner plugins can cover the broader checks already described by the
+protocol:
 
 - secrets in changed files and artifacts;
 - unsafe shell commands;
@@ -473,9 +509,6 @@ The security scanner is a gate before final approval. It should check:
 - token or credential leakage into reports;
 - suspicious dependency or network changes;
 - Telegram and plugin permissions.
-
-Findings follow the same blocking model as review: critical issues block, lower
-severity findings become explicit follow-ups unless policy promotes them.
 
 ## Context Preflight
 
@@ -601,6 +634,8 @@ task create/import   Create or import tasks
 contract             Create or update task contract
 start                Start a run
 sensors              Run deterministic sensors
+security scan        Scan secrets and optionally bind evidence to a run
+ptbr-review          Record spelling, accentuation and clarity review
 quick-pass           Run quick sensors and generate parallel handoffs
 full-pass            Run final sensors and generate parallel handoffs
 evaluate             Generate handoffs or record final evaluation
@@ -623,10 +658,11 @@ Run tests:
 python -m pytest tests/
 ```
 
-Compile-check the CLI:
+Run static analysis and compile checks:
 
 ```powershell
-python -m py_compile bin\harness.py
+python -m ruff check .
+python -m compileall -q bin .github\scripts tests
 ```
 
 The project intentionally has no runtime dependencies. Tests use `pytest`.
