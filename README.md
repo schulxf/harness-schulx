@@ -519,8 +519,8 @@ state. Helpers may:
 
 - import GitHub Issues as Harness tasks;
 - map task ids to branches and PRs;
-- generate PR descriptions from reports and sensor evidence;
-- attach reviewer/evaluator summaries;
+- gerar uma descrição curta de PR a partir do resumo simples e das evidências finais;
+- criar um comentário público simples no PR com conteúdo sanitizado e em linguagem direta;
 - create follow-up issues for non-blocking P2 findings.
 
 This repository also includes a PR template and an automation that validates a
@@ -528,6 +528,16 @@ short, plain-language summary, requires the PT-BR review checkbox and creates or
 updates one simple comment on every new PR. The automation reads only the event
 and the workflow from the default branch; it never checks out or executes code
 from the PR.
+
+`harness github pr-create TASK-001` usa a mesma política final de
+`evaluate --status pass`: sensores finais, verificação de segurança da run, revisão PT-BR,
+task/avaliação em `pass`, evidência atual do reviewer sem P0/P1 bloqueante e
+nenhum `failure-decision` bloqueante. Ele grava
+`.harness/github/TASK-001-pr-body.md` e
+`.harness/github/TASK-001-pr-comment.md`, cria o PR com
+`gh pr create --body-file`. Quando o repositório já tem a automação de
+comentários do Harness, ela publica o resumo; nos demais casos, o CLI usa
+`gh pr comment --body-file`, sem criar comentários duplicados.
 
 ### Plugin Registry
 

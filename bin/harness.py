@@ -118,6 +118,7 @@ from harness_core.evaluation_text import (  # noqa: E402,F401
     render_plain_summary_for_message,
     render_report,
     render_review_consolidation,
+    reviewer_result_blocking_findings,
 )
 from harness_core.event_pipeline import (  # noqa: E402,F401
     append_and_maybe_notify_event,
@@ -138,7 +139,12 @@ from harness_core.git_helpers import (  # noqa: E402
     is_git_repo,
     protected_branches,
 )
-from harness_core.github_pr import render_github_pr_body  # noqa: E402,F401
+from harness_core.github_pr import (  # noqa: E402,F401
+    automatic_pr_comment_enabled,
+    render_github_pr_body,
+    render_github_pr_comment,
+    sanitize_public_pr_text,
+)
 from harness_core.hub_agents import (  # noqa: E402
     hub_agent_name_for_role,
     sector_for_role,
@@ -1899,26 +1905,112 @@ def command_github_pr_body(args: argparse.Namespace) -> None:
     print(body if args.print else f"PR body escrito: {path}")
 
 
+def extract_pr_url(output: str) -> str:
+    match = re.search(r"https://\S+/pull/\d+", output or "")
+    if not match:
+        raise SystemExit("gh pr create não retornou a URL do PR.")
+    return match.group(0).rstrip(".,)")
+
+
+def require_github_pr_create_gate(root: Path, task_id: str, config: dict[str, Any]) -> None:
+    task = find_task(root, task_id)
+    contract = load_contract(root, task_id)
+    run_dir = latest_run_dir(root, task_id)
+    evaluation = read_json(run_dir / "evaluation.json", {})
+    code_review = read_json(run_dir / "code-review.json", {})
+    failures: list[str] = []
+    if task.get("status") != "passed":
+        failures.append("a task ainda não está marcada como passed")
+    if evaluation.get("status") != "pass":
+        failures.append("falta avaliação final pass")
+    failure_decision = read_json(run_dir / "failure-decision.json", {})
+    if (
+        failure_decision.get("status") == "blocked"
+        or failure_decision.get("blockers")
+        or failure_decision.get("evaluator_failed")
+    ):
+        failures.append("há failure-decision bloqueante nesta run")
+    reviewer_result_blockers = reviewer_result_blocking_findings(run_dir, config)
+    if reviewer_result_blockers:
+        severities = ", ".join(sorted({str(item.get("severity")) for item in reviewer_result_blockers}))
+        failures.append(f"o resultado final do reviewer registrou achado(s) bloqueante(s): {severities}")
+    failures.extend(
+        completion_gate_failures(
+            root,
+            task,
+            contract,
+            run_dir,
+            config,
+            str(evaluation.get("notes") or ""),
+            code_review,
+            enforce_time_budget=False,
+        )
+    )
+    if failures:
+        details = "\n".join(f"- {failure}" for failure in failures)
+        raise SystemExit(
+            "github pr-create bloqueado pelos gates de conclusão:\n"
+            f"{details}\n\n"
+            "Conclua a política operacional em PT-BR, sensores, segurança, avaliação e review antes de criar o PR."
+        )
+
+
 def command_github_pr_create(args: argparse.Namespace) -> None:
     root = prepared_repo(args, safe_operation="github pr-create")
     config = load_config(root)
     gconfig = github_config(config)
     task = find_task(root, args.task_id)
+    require_github_pr_create_gate(root, args.task_id, config)
     body_path = github_root(root) / f"{args.task_id}-pr-body.md"
+    comment_path = github_root(root) / f"{args.task_id}-pr-comment.md"
     write_text(body_path, render_github_pr_body(root, args.task_id))
-    title = args.title or f"{args.task_id}: {task.get('title')}"
+    write_text(comment_path, render_github_pr_comment(root, args.task_id))
+    automatic_comment = automatic_pr_comment_enabled(root)
+    title = sanitize_public_pr_text(
+        args.title or f"{args.task_id}: {task.get('title')}",
+        limit=200,
+    )
     base = args.base or gconfig.get("default_base") or "main"
     argv = ["gh", "pr", "create", "--title", title, "--body-file", str(body_path), "--base", base]
     if args.head:
         argv.extend(["--head", args.head])
+    comment_argv = ["gh", "pr", "comment", "<PR_URL>", "--body-file", str(comment_path)]
     if args.dry_run or not shutil.which("gh"):
         print("Dry-run gh command:")
         print(" ".join(shlex.quote(part) for part in argv))
+        if automatic_comment:
+            print("O comentário simples será publicado pela automação do repositório.")
+        else:
+            print("Dry-run gh comment command:")
+            print(" ".join(shlex.quote(part) for part in comment_argv))
+        print(f"PR body escrito: {body_path}")
+        print(f"Comentário simples escrito: {comment_path}")
         return
     result = subprocess.run(argv, cwd=root, text=True, capture_output=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         raise SystemExit(result.stderr.strip() or "gh pr create falhou")
-    print(result.stdout.strip())
+    pr_url = extract_pr_url(result.stdout)
+    if automatic_comment:
+        print(f"PR criado: {pr_url}")
+        print("O comentário simples será publicado pela automação do repositório.")
+        return
+    comment_argv = ["gh", "pr", "comment", pr_url, "--body-file", str(comment_path)]
+    comment_result = subprocess.run(
+        comment_argv,
+        cwd=root,
+        text=True,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if comment_result.returncode != 0:
+        raise SystemExit(
+            f"PR criado: {pr_url}\n"
+            "Falha ao publicar o comentário simples do Harness:\n"
+            f"{comment_result.stderr.strip() or comment_result.stdout.strip() or 'gh pr comment falhou'}"
+        )
+    print(f"PR criado: {pr_url}")
+    print("Comentário simples publicado no PR.")
 
 
 def command_github_issue_import(args: argparse.Namespace) -> None:
@@ -2070,6 +2162,8 @@ def completion_gate_failures(
     config: dict[str, Any],
     evaluation_notes: str,
     code_review: dict[str, Any],
+    *,
+    enforce_time_budget: bool = True,
 ) -> list[str]:
     failures: list[str] = []
     policy = config.get("policy", {})
@@ -2146,14 +2240,15 @@ def completion_gate_failures(
         failures.append("falta uma nota curta com a decisão do avaliador")
 
     if config_bool(policy.get("budget_required_before_done"), True):
-        started_at = parse_utc_datetime(run_meta.get("created_at"))
-        time_limit = budget.get("time_budget_minutes") or budget.get("timeout_minutes")
-        if started_at and time_limit:
-            elapsed_minutes = (datetime.now(timezone.utc) - started_at).total_seconds() / 60
-            if elapsed_minutes > float(time_limit):
-                failures.append(
-                    f"o orçamento de tempo foi excedido ({elapsed_minutes:.1f}/{time_limit} min)"
-                )
+        if enforce_time_budget:
+            started_at = parse_utc_datetime(run_meta.get("created_at"))
+            time_limit = budget.get("time_budget_minutes") or budget.get("timeout_minutes")
+            if started_at and time_limit:
+                elapsed_minutes = (datetime.now(timezone.utc) - started_at).total_seconds() / 60
+                if elapsed_minutes > float(time_limit):
+                    failures.append(
+                        f"o orçamento de tempo foi excedido ({elapsed_minutes:.1f}/{time_limit} min)"
+                    )
         max_fix_attempts = budget.get("max_fix_attempts")
         fix_attempts = len(list(run_dir.glob("fix-brief-[0-9][0-9].md")))
         if max_fix_attempts is not None and fix_attempts > int(max_fix_attempts):
@@ -2162,7 +2257,6 @@ def completion_gate_failures(
             )
 
     return failures
-
 
 def command_evaluate(args: argparse.Namespace) -> None:
     root = prepared_repo(args, safe_operation="evaluate")
