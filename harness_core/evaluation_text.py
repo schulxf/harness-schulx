@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -236,6 +237,12 @@ def plain_clean(value: Any) -> str:
     return text.strip()
 
 
+def plain_key(value: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", value)
+    without_accents = "".join(char for char in decomposed if not unicodedata.combining(char))
+    return without_accents.lower()
+
+
 def render_plain_summary(
     task: dict[str, Any],
     contract: dict[str, Any],
@@ -319,7 +326,10 @@ def extract_review_findings(text: str) -> list[dict[str, str]]:
         match = re.search(r"\bP([012])\b|\[P([012])\]", line, re.IGNORECASE)
         if not match:
             continue
-        if re.search(r"\b(?:nenhum|sem)\b", line[: match.start()], re.IGNORECASE):
+        line_key = plain_key(line)
+        before = line_key[: match.start()]
+        after = line_key[match.end() :]
+        if re.search(r"\b(?:nenhum|sem)\b", before) or re.match(r"\s*:\s*(?:nenhum|sem)\b", after):
             continue
         severity = f"P{match.group(1) or match.group(2)}".upper()
         findings.append({"severity": severity, "text": plain_clean(line)})
@@ -333,7 +343,7 @@ def blocking_findings_from_review(text: str, config: dict[str, Any]) -> list[dic
     blockers: list[dict[str, str]] = []
     for finding in findings:
         severity = finding["severity"]
-        lowered = finding["text"].lower()
+        lowered = plain_key(finding["text"])
         if severity == "P0" and config_bool(blocking.get("p0"), True):
             blockers.append(finding)
         elif severity == "P1" and config_bool(blocking.get("p1_in_changed_surface"), True):
@@ -342,6 +352,35 @@ def blocking_findings_from_review(text: str, config: dict[str, Any]) -> list[dic
         elif severity == "P2" and config_bool(blocking.get("p2"), False):
             blockers.append(finding)
     return blockers
+
+
+def reviewer_result_attempt_number(path: Path) -> int | None:
+    match = re.search(r"-(\d+)\.md$", path.name)
+    return int(match.group(1)) if match else None
+
+
+def latest_reviewer_result_path(run_dir: Path) -> Path | None:
+    candidates = [
+        path
+        for pattern in ("greptile-reviewer-result*.md", "reviewer-result*.md")
+        for path in run_dir.glob(pattern)
+        if path.is_file()
+    ]
+    if not candidates:
+        return None
+
+    def sort_key(path: Path) -> tuple[int, int, float, str]:
+        attempt = reviewer_result_attempt_number(path)
+        return (1 if attempt is not None else 0, attempt or 0, path.stat().st_mtime, path.name)
+
+    return max(candidates, key=sort_key)
+
+
+def reviewer_result_blocking_findings(run_dir: Path, config: dict[str, Any]) -> list[dict[str, str]]:
+    result_path = latest_reviewer_result_path(run_dir)
+    if not result_path:
+        return []
+    return blocking_findings_from_review(result_path.read_text(encoding="utf-8"), config)
 
 
 def next_fix_brief_path(run_dir: Path) -> Path:

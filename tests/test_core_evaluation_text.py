@@ -3,10 +3,12 @@ from pathlib import Path
 from harness_core.evaluation_text import (
     blocking_findings_from_review,
     extract_review_findings,
+    latest_reviewer_result_path,
     next_fix_brief_path,
     render_fix_brief,
     render_plain_summary,
     render_plain_summary_for_message,
+    reviewer_result_blocking_findings,
 )
 
 
@@ -55,6 +57,47 @@ def test_blocking_findings_ignore_p1_outside_changed_surface() -> None:
     )
 
     assert blockers == []
+
+
+def test_blocking_findings_ignore_accented_outside_surface_and_none_declarations() -> None:
+    blockers = blocking_findings_from_review(
+        "\n".join(
+            [
+                "P0: nenhum.",
+                "[P1] fora da superfície alterada: seria bom refatorar outro modulo",
+                "Achados bloqueantes: nenhum P0/P1.",
+            ]
+        ),
+        {},
+    )
+
+    assert blockers == []
+
+
+def test_latest_reviewer_result_path_prefers_highest_numeric_suffix(tmp_path: Path) -> None:
+    old = tmp_path / "greptile-reviewer-result-9.md"
+    new = tmp_path / "reviewer-result-10.md"
+    unsuffixed = tmp_path / "greptile-reviewer-result.md"
+    old.write_text("P0 antigo", encoding="utf-8")
+    new.write_text("P0 final", encoding="utf-8")
+    unsuffixed.write_text("P0 sem sufixo", encoding="utf-8")
+
+    assert latest_reviewer_result_path(tmp_path) == new
+
+
+def test_reviewer_result_blocking_findings_reads_final_result(tmp_path: Path) -> None:
+    (tmp_path / "greptile-reviewer-result-01.md").write_text(
+        "[P0] achado antigo",
+        encoding="utf-8",
+    )
+    (tmp_path / "greptile-reviewer-result-02.md").write_text(
+        "[P1] quebra na superfície alterada",
+        encoding="utf-8",
+    )
+
+    blockers = reviewer_result_blocking_findings(tmp_path, {})
+
+    assert [item["severity"] for item in blockers] == ["P1"]
 
 
 def test_next_fix_brief_path_uses_next_numeric_suffix(tmp_path: Path) -> None:

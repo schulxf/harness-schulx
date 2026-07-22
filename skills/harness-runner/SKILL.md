@@ -366,7 +366,7 @@ Midias sao salvas em `.harness/inbox/telegram/media/`.
 - O reviewer Greptile-style revisa risco do diff, nao substitui o avaliador contratual.
 - Use `review-consolidation.md`: `FAIL`, `P0`, `P1` na superficie alterada e security critical bloqueiam.
 - Use security scanner vinculado à run antes do pass em todos os profiles padrão.
-- Se GitHub helpers estiverem configurados, gere PR body a partir do contrato, sensores, report e findings aceitos.
+- Se os auxiliares do GitHub estiverem configurados, use `github pr-create` apenas depois dos gates finais; ele grava a descrição e o comentário simples em `.harness/github`, cria o PR e garante um único comentário sanitizado.
 - Plugins devem declarar comandos, arquivos escritos, acesso de rede e secrets usados.
 - Se sensores falharem, crie o menor fix brief possivel e rode novamente.
 - Guarde progresso em `.harness`, nao so na memoria do chat.
