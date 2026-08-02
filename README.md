@@ -669,6 +669,27 @@ Read the full guide in [docs/TELEGRAM.md](docs/TELEGRAM.md).
 refactor is allowed to move implementation code, but not to remove that public
 surface.
 
+This repository also bundles the upstream Graph Engineering skill. It supplies
+knowledge-graph, GraphRAG and agent task-graph guidance while Harness remains
+responsible for execution state and approval gates. It is an agent skill, not an
+executable plugin.
+
+From this checkout, install or refresh the bundled skills in Codex with:
+
+```powershell
+$CODEX_SKILLS = Join-Path $env:USERPROFILE ".codex\skills"
+$GRAPH_SKILL = Join-Path $CODEX_SKILLS "graph-engineering"
+New-Item -ItemType Directory -Force $GRAPH_SKILL | Out-Null
+Copy-Item -Recurse -Force ".\skills\graph-engineering\*" $GRAPH_SKILL
+```
+
+Invoke `$graph-engineering` only for graph-shaped work. The Harness-specific
+boundary and artifact contract lives in
+[`references/harness-integration.md`](skills/graph-engineering/references/harness-integration.md).
+The original material is from
+[`codejunkie99/graph-engineering`](https://github.com/codejunkie99/graph-engineering)
+and remains under its MIT License.
+
 Check the protected command surface:
 
 ```powershell
@@ -696,7 +717,8 @@ docs/
 examples/
   issue-login.md          Example issue
 skills/
-  harness-runner/         Codex skill copy
+  graph-engineering/      Vendored graph and GraphRAG specialist skill
+  harness-runner/         Harness operational skill
 tests/
   test_cli_smoke.py
   test_pure.py
