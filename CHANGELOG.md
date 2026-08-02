@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Bundled the Graph Engineering skill with Harness-specific guidance for
+  knowledge graphs, GraphRAG and bounded multi-agent task graphs.
 - Made JSON writes atomic and protected task/queue read-modify-write operations
   with cross-process locks.
 - Added unique run ids and Git baselines that preserve committed changes in

@@ -12,6 +12,7 @@ from harness_core.compat import SKILL_REQUIRED_COMMANDS
 
 ROOT = Path(__file__).resolve().parent.parent
 HARNESS = ROOT / "bin" / "harness.py"
+GRAPH_SKILL = ROOT / "skills" / "graph-engineering"
 
 
 def run_cli(
@@ -96,3 +97,40 @@ def test_disabled_hub_control_survives_subprocess_boundary(tmp_path):
     )
     assert registered.returncode == 0, registered.stderr or registered.stdout
     assert not (control / ".harness" / "dashboard" / "hub" / "repos.json").exists()
+
+
+def test_graph_engineering_skill_is_bundled_with_harness_contract():
+    skill_text = (GRAPH_SKILL / "SKILL.md").read_text(encoding="utf-8")
+    integration_text = (GRAPH_SKILL / "references" / "harness-integration.md").read_text(
+        encoding="utf-8"
+    )
+    license_text = (GRAPH_SKILL / "LICENSE").read_text(encoding="utf-8")
+    agent_metadata = (GRAPH_SKILL / "agents" / "openai.yaml").read_text(encoding="utf-8")
+
+    assert skill_text.startswith("---\nname: graph-engineering\n")
+    assert "references/harness-integration.md" in skill_text
+    assert "cfacb56a05a31ba69bf84d0b8b00f5ce463127ef" in skill_text
+    assert "Do not register this skill as a Harness plugin" in integration_text
+    assert "one active implementation" in integration_text
+    assert license_text.startswith("MIT License\n")
+    assert 'display_name: "Graph Engineering"' in agent_metadata
+    assert "$graph-engineering" in agent_metadata
+
+    for reference in (
+        "curriculum.md",
+        "extraction.md",
+        "fusion-and-llm.md",
+        "harness-integration.md",
+        "modeling.md",
+        "task-graphs.md",
+    ):
+        assert (GRAPH_SKILL / "references" / reference).is_file()
+
+
+def test_harness_runner_routes_graph_work_to_bundled_skill():
+    runner_text = (ROOT / "skills" / "harness-runner" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "$graph-engineering" in runner_text
+    assert "nao e um plugin executavel" in runner_text

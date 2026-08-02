@@ -13,6 +13,19 @@ v0.3 e local-first: dashboard, pixel-art hub multi-repo, queue, supervisor,
 checkpoints, artifact viewer, project memory, plugin registry, security scanner e Telegram remote control sao
 superficies sobre o mesmo estado `.harness/`.
 
+## Graph Engineering
+
+Use a skill `$graph-engineering` como especialista quando a task envolver
+ontologia, extracao de entidades ou relacoes, fusao de entidades, GraphRAG,
+memoria semantica ou um grafo explicito de trabalho multiagente. Nao a invoque
+para bugs, features e refactors comuns que nao precisam dessas estruturas.
+
+Graph Engineering define o modelo e a topologia; o Harness continua responsavel
+por contrato, queue, run, checkpoints, sensores, budgets e gates finais. A skill
+nao e um plugin executavel nem substitui o supervisor. Em grafos de tarefas,
+mantenha uma implementacao ativa por repo e use paralelismo apenas para handoffs
+independentes ou revisoes, com um unico dono da consolidacao.
+
 ## CLI
 
 Caminho local padrao depois de clonar este repo:

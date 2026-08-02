@@ -21,6 +21,7 @@ python bin\harness.py --help
 - `__pycache__/` and `.pytest_cache/` ignored.
 - README updated.
 - Skill copy updated in `skills/harness-runner/SKILL.md`.
+- Bundled skills have valid frontmatter, referenced files and license notices.
 - v0.3 protocol docs updated.
 - Telegram remote-control docs updated.
 - Dashboard, pixel-art hub, queue, supervisor, resume/checkpoint, GitHub helper,

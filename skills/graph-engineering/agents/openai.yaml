@@ -1,0 +1,4 @@
+interface:
+  display_name: "Graph Engineering"
+  short_description: "Design knowledge graphs and agent task graphs"
+  default_prompt: "Use $graph-engineering to design a knowledge graph or agent task graph for this project."
